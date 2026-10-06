@@ -26,13 +26,26 @@ import {
   ArrowRight,
   Camera,
   Star,
-  Plus
+  Plus,
+  GitBranch,
+  Github,
+  Globe,
+  Key,
+  CheckCircle2,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { InventoryItem, OrderItem, StoreSettings } from '../types';
 import { compressImageFile } from '../utils/imageCompress';
 import { PRESET_IMAGES, CATEGORIES, CONDITIONS } from '../utils/imagePresets';
 import { ItemImage } from './ItemImage';
 import { api } from '../services/api';
+import {
+  getGitHubSyncConfig,
+  saveGitHubSyncConfig,
+  syncStoreDataToGitHub,
+  GitHubSyncConfig,
+} from '../services/githubSync';
 
 interface AdminPortalProps {
   items: InventoryItem[];
@@ -109,6 +122,52 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [isPersisting, setIsPersisting] = useState(false);
   const [persistFeedback, setPersistFeedback] = useState<string | null>(null);
   const [copiedTs, setCopiedTs] = useState(false);
+
+  // GitHub Cloud Sync states (End-to-End Cross-Device Sync)
+  const [ghConfig, setGhConfig] = useState<GitHubSyncConfig>(() => getGitHubSyncConfig());
+  const [ghTokenInput, setGhTokenInput] = useState(ghConfig.token);
+  const [ghRepoOwnerInput] = useState(ghConfig.owner || 'swkknk1');
+  const [ghRepoNameInput] = useState(ghConfig.repo || 'swkknk');
+  const [ghBranchInput] = useState(ghConfig.branch || 'main');
+  const [ghAutoSync, setGhAutoSync] = useState(ghConfig.autoSync);
+  const [showGhToken, setShowGhToken] = useState(false);
+  const [isSyncingGitHub, setIsSyncingGitHub] = useState(false);
+  const [ghFeedback, setGhFeedback] = useState<{ success: boolean; message: string; commitUrl?: string } | null>(null);
+  const [showGhGuide, setShowGhGuide] = useState(false);
+
+  const handleSyncToGitHub = async (customCommitMsg?: string) => {
+    setIsSyncingGitHub(true);
+    setGhFeedback(null);
+    try {
+      saveGitHubSyncConfig({
+        token: ghTokenInput.trim(),
+        owner: ghRepoOwnerInput.trim() || 'swkknk1',
+        repo: ghRepoNameInput.trim() || 'swkknk',
+        branch: ghBranchInput.trim() || 'main',
+        autoSync: ghAutoSync,
+      });
+      setGhConfig(getGitHubSyncConfig());
+
+      const latestItems = await api.getItems();
+      const latestSettings = await api.getSettings();
+      const res = await syncStoreDataToGitHub(
+        latestItems,
+        latestSettings,
+        customCommitMsg || '更新商品与出清设置 [店主在线发布]'
+      );
+      setGhFeedback(res);
+      if (res.success) {
+        setTimeout(() => setGhFeedback(null), 10000);
+      }
+    } catch (e: any) {
+      setGhFeedback({
+        success: false,
+        message: e?.message || '同步至 GitHub 失败，请检查网络或 Token 权限',
+      });
+    } finally {
+      setIsSyncingGitHub(false);
+    }
+  };
 
   const getTsCodeString = () => {
     return `import { InventoryItem, StoreSettings } from '../types';
@@ -290,6 +349,10 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
         setFormFeedback('新商品已发布至集市！');
       }
 
+      if (ghAutoSync && ghTokenInput.trim()) {
+        handleSyncToGitHub(editingItemId ? `更新商品《${payload.title}》` : `发布新商品《${payload.title}》`);
+      }
+
       setTimeout(() => {
         handleResetForm();
         setActiveTab('inventory');
@@ -323,6 +386,10 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
     });
     setSettingsSaved(true);
     setTimeout(() => setSettingsSaved(false), 2500);
+
+    if (ghAutoSync && ghTokenInput.trim()) {
+      handleSyncToGitHub('更新店铺配置信息');
+    }
   };
 
   const handleTestEmail = async () => {
@@ -394,7 +461,30 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
             </h1>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {ghConfig.token ? (
+              <button
+                type="button"
+                onClick={() => handleSyncToGitHub()}
+                disabled={isSyncingGitHub}
+                className="px-3.5 py-2 bg-stone-900 hover:bg-stone-800 disabled:opacity-50 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                title="立即将当前全部数据推送到 GitHub，Netlify 将自动部署至全网"
+              >
+                <Github className={`w-3.5 h-3.5 ${isSyncingGitHub ? 'animate-spin' : ''}`} />
+                <span>{isSyncingGitHub ? '全网同步中...' : '同步全网 (Netlify)'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setActiveTab('settings')}
+                className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                title="前往设置 GitHub 访问令牌以实现跨设备全网数据互通"
+              >
+                <Key className="w-3.5 h-3.5 text-amber-600" />
+                <span>配置全网云同步</span>
+              </button>
+            )}
+
             <button
               onClick={onCloseAdmin}
               className="px-3.5 py-2 text-xs font-medium text-stone-700 bg-stone-100 hover:bg-stone-200 rounded-lg transition-colors cursor-pointer"
@@ -411,6 +501,37 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
             )}
           </div>
         </div>
+
+        {/* Global Cloud Sync Feedback Notification */}
+        {ghFeedback && (
+          <div
+            className={`mt-4 p-3.5 rounded-xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in ${
+              ghFeedback.success
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : 'bg-red-50 border-red-200 text-red-900'
+            }`}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              {ghFeedback.success ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+              )}
+              <span className="font-medium">{ghFeedback.message}</span>
+            </div>
+            {ghFeedback.commitUrl && (
+              <a
+                href={ghFeedback.commitUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 underline hover:text-emerald-900 shrink-0"
+              >
+                <span>查看 GitHub 提交记录</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            )}
+          </div>
+        )}
 
         {/* Tab Buttons */}
         <div className="flex items-center gap-2 pt-4 overflow-x-auto">
@@ -940,11 +1061,15 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
                     <td className="py-3 px-3">
                       <select
                         value={item.status}
-                        onChange={(e) =>
-                          onUpdateItem(item.id, {
-                            status: e.target.value as any,
-                          })
-                        }
+                        onChange={async (e) => {
+                          const newStatus = e.target.value as any;
+                          await onUpdateItem(item.id, {
+                            status: newStatus,
+                          });
+                          if (ghAutoSync && ghTokenInput.trim()) {
+                            handleSyncToGitHub(`更新商品《${item.title}》状态为${newStatus === 'available' ? '在售' : '已售出'}`);
+                          }
+                        }}
                         className={`text-xs px-2 py-1 rounded border font-medium bg-white ${
                           item.status === 'available'
                             ? 'border-emerald-200 text-emerald-700'
@@ -966,9 +1091,12 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
                           <Edit2 className="w-3.5 h-3.5" />
                         </button>
                         <button
-                          onClick={() => {
+                          onClick={async () => {
                             if (confirm(`确认删除《${item.title}》吗？`)) {
-                              onDeleteItem(item.id);
+                              await onDeleteItem(item.id);
+                              if (ghAutoSync && ghTokenInput.trim()) {
+                                handleSyncToGitHub(`下架删除商品《${item.title}》`);
+                              }
                             }
                           }}
                           className="p-1.5 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
@@ -1484,6 +1612,198 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
                 </button>
               </div>
             </form>
+          </div>
+
+          {/* GitHub Cloud Auto-Sync Section (End-to-End Cross-Device Sync) */}
+          <div className="bg-stone-900 text-white rounded-2xl border border-stone-800 p-6 md:p-8 shadow-md space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+              <div>
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-md text-[11px] font-semibold mb-2">
+                  <Github className="w-3.5 h-3.5" />
+                  <span>GitHub 云端自动同步 (全网跨设备端到端互通)</span>
+                </div>
+                <h2 className="text-base font-bold text-white flex items-center gap-2">
+                  <span>多端数据互通：手机电脑发布，全网买家即时可见</span>
+                  {ghConfig.token ? (
+                    <span className="text-[11px] font-medium bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      已连接云端
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-medium bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full border border-amber-500/30">
+                      待填入 Token
+                    </span>
+                  )}
+                </h2>
+                <p className="text-xs text-stone-300 mt-1.5 leading-relaxed max-w-3xl">
+                  网站托管在 Netlify，每次将商品数据推送到 GitHub 仓库（<code>{ghRepoOwnerInput}/{ghRepoNameInput}</code>）的 <code>{ghBranchInput}</code> 分支，Netlify 会自动在 <strong>30~50 秒内全自动打包上线</strong>。无需任何自建服务器，任意设备打开网页都能同步看到最新在售商品与库存！
+                </p>
+              </div>
+
+              <div className="shrink-0 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowGhGuide(!showGhGuide)}
+                  className="px-3 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Key className="w-3.5 h-3.5 text-amber-400" />
+                  <span>{showGhGuide ? '收起 Token 教程' : '🔑 如何获取 GitHub Token？'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Quick 30-sec Guide */}
+            {showGhGuide && (
+              <div className="p-4 bg-stone-800/80 border border-stone-700 rounded-xl text-xs text-stone-300 space-y-2 animate-in fade-in">
+                <div className="font-bold text-amber-300 flex items-center gap-2">
+                  <span>⚡ 30 秒快速获取 GitHub Token 步骤（只需操作一次）：</span>
+                </div>
+                <ol className="list-decimal pl-5 space-y-1.5 text-stone-300 text-[12px] leading-relaxed">
+                  <li>
+                    登录 GitHub，直接点击打开官方生成链接：{' '}
+                    <a
+                      href="https://github.com/settings/tokens/new?scopes=repo&description=Store-Cloud-Sync"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-amber-400 underline font-semibold inline-flex items-center gap-1 hover:text-amber-300"
+                    >
+                      <span>一键创建 Personal Access Token (Classic)</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </li>
+                  <li>
+                    进入页面后，权限已为您自动预选了 <code>repo</code> 权限（具备读写仓库权限）。
+                  </li>
+                  <li>
+                    直接滑到页面最底部，点击绿色的 <strong>「Generate token」</strong> 按钮。
+                  </li>
+                  <li>
+                    复制生成的以 <code>ghp_</code> 开头的 Token 秘钥字符串，粘贴回下方的输入框即可！
+                  </li>
+                </ol>
+                <div className="text-[11px] text-stone-400 pt-1 border-t border-stone-700">
+                  🔒 安全承诺：此 Token 仅保存在您当前浏览器的本地存储（LocalStorage）中，绝不会外泄或提交给任何第三方。
+                </div>
+              </div>
+            )}
+
+            {/* Token Input and Repository settings */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+              <div className="md:col-span-2">
+                <label className="block text-xs font-semibold text-stone-300 mb-1.5 flex items-center justify-between">
+                  <span>GitHub 访问令牌 (Personal Access Token)</span>
+                  {ghTokenInput && (
+                    <button
+                      type="button"
+                      onClick={() => setShowGhToken(!showGhToken)}
+                      className="text-[11px] text-stone-400 hover:text-stone-200 flex items-center gap-1"
+                    >
+                      {showGhToken ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                      <span>{showGhToken ? '隐藏' : '显示明文'}</span>
+                    </button>
+                  )}
+                </label>
+                <div className="relative">
+                  <input
+                    type={showGhToken ? 'text' : 'password'}
+                    value={ghTokenInput}
+                    onChange={(e) => {
+                      setGhTokenInput(e.target.value);
+                      saveGitHubSyncConfig({ token: e.target.value });
+                    }}
+                    placeholder="粘贴 ghp_xxxxxxxxxxxxxxxxxxxx"
+                    className="w-full text-xs px-3.5 py-2.5 bg-stone-800 border border-stone-700 rounded-lg focus:outline-hidden focus:border-amber-400 font-mono text-white placeholder-stone-500"
+                  />
+                </div>
+                <p className="text-[11px] text-stone-400 mt-1">
+                  填入后，系统即可在线提交数据到 <code>src/data/storeData.ts</code> 触发全网更新。
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-stone-300 mb-1.5">
+                  目标仓库与分支
+                </label>
+                <div className="text-xs px-3.5 py-2.5 bg-stone-800/80 border border-stone-700 rounded-lg font-mono text-stone-300 flex items-center gap-2">
+                  <GitBranch className="w-3.5 h-3.5 text-amber-400" />
+                  <span>swkknk1 / swkknk : main</span>
+                </div>
+                <div className="mt-2">
+                  <label className="flex items-center gap-2 cursor-pointer text-xs text-stone-300 select-none">
+                    <input
+                      type="checkbox"
+                      checked={ghAutoSync}
+                      onChange={(e) => {
+                        setGhAutoSync(e.target.checked);
+                        saveGitHubSyncConfig({ autoSync: e.target.checked });
+                      }}
+                      className="rounded border-stone-600 bg-stone-800 text-amber-500 focus:ring-0"
+                    />
+                    <span>发布/修改商品时自动推送到 GitHub</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {/* Sync Action Buttons */}
+            <div className="flex flex-wrap items-center gap-3 pt-3 border-t border-stone-800">
+              <button
+                type="button"
+                onClick={() => handleSyncToGitHub()}
+                disabled={isSyncingGitHub}
+                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl text-xs font-semibold flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
+              >
+                <UploadCloud className={`w-4 h-4 ${isSyncingGitHub ? 'animate-spin' : ''}`} />
+                <span>{isSyncingGitHub ? '正在推送至 GitHub 触发 Netlify 打包...' : '立即同步全网数据到云端 (Netlify 自动部署)'}</span>
+              </button>
+
+              {ghConfig.token && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirm('确认清除本地保存的 GitHub Token 吗？')) {
+                      setGhTokenInput('');
+                      saveGitHubSyncConfig({ token: '' });
+                      setGhConfig(getGitHubSyncConfig());
+                    }
+                  }}
+                  className="px-3.5 py-2 text-stone-400 hover:text-stone-200 hover:bg-stone-800 rounded-lg text-xs transition-colors"
+                >
+                  清除 Token
+                </button>
+              )}
+            </div>
+
+            {/* Sync Feedback */}
+            {ghFeedback && (
+              <div
+                className={`p-3.5 rounded-xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in ${
+                  ghFeedback.success
+                    ? 'bg-emerald-950/60 border-emerald-800 text-emerald-200'
+                    : 'bg-red-950/60 border-red-800 text-red-200'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  {ghFeedback.success ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+                  )}
+                  <span>{ghFeedback.message}</span>
+                </div>
+                {ghFeedback.commitUrl && (
+                  <a
+                    href={ghFeedback.commitUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-300 underline hover:text-emerald-100 shrink-0"
+                  >
+                    <span>查看提交记录 (Commit)</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Permanent Source Code Baking Section */}

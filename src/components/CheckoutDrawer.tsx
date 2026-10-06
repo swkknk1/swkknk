@@ -181,6 +181,8 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
     markCurrentItemsAsSent();
   };
 
+  const isWeChatBrowser = typeof navigator !== 'undefined' && /MicroMessenger/i.test(navigator.userAgent);
+
   const handleGmailClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     if (!buyerName.trim()) {
       e.preventDefault();
@@ -191,6 +193,14 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
       e.preventDefault();
       alert('请填写您的邮箱或微信/电话，方便店主回复确认');
       return;
+    }
+
+    if (isWeChatBrowser) {
+      const proceed = confirm('微信内置浏览器可能会拦截 Gmail 网页。建议优先使用下方【微信发送】；若继续，请在打开页面后点击右上角三个点「在浏览器打开」。是否继续？');
+      if (!proceed) {
+        e.preventDefault();
+        return;
+      }
     }
 
     // Save email into persistence for future visits
@@ -555,35 +565,66 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
         {/* Footer Actions */}
         {!submittedOrder && resolvedItems.length > 0 && (
           <div className="p-4 border-t border-stone-200 bg-stone-50/50 space-y-2">
-            {/* Direct Native Link to Web Gmail: Always openable, and re-sendable anytime! */}
-            <a
-              href={gmailWebUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={handleGmailClick}
-              className="w-full py-2.5 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
-            >
-              <Mail className="w-4 h-4 shrink-0" />
-              <span className="truncate">
-                {allItemsSent
-                  ? '在网页版 Gmail 中再次发送邮件'
-                  : '在网页版 Gmail 中发送给店主'}
-              </span>
-              <ExternalLink className="w-3.5 h-3.5 opacity-80 shrink-0" />
-            </a>
+            {isWeChatBrowser ? (
+              <>
+                {/* WeChat Browser Priority: Send via WeChat */}
+                <button
+                  type="button"
+                  onClick={handleWeChatSend}
+                  className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                >
+                  <MessageCircle className="w-4 h-4 shrink-0" />
+                  <span>{isCopied ? '已复制！点击再次查看微信名片' : '微信发送 (复制清单并展示店主名片)'}</span>
+                </button>
 
-            {/* Action 2: Send via WeChat */}
-            <button
-              type="button"
-              onClick={handleWeChatSend}
-              className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
-            >
-              <MessageCircle className="w-4 h-4 shrink-0" />
-              <span>{isCopied ? '已复制！点击再次查看微信名片' : '微信发送 (复制清单并展示店主二维码)'}</span>
-            </button>
+                {/* Secondary Gmail */}
+                <a
+                  href={gmailWebUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={handleGmailClick}
+                  className="w-full py-2 px-3 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Mail className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">在网页版 Gmail 中发送 (可能受微信拦截)</span>
+                  <ExternalLink className="w-3 h-3 opacity-60 shrink-0" />
+                </a>
+              </>
+            ) : (
+              <>
+                {/* Normal Browser: Web Gmail first */}
+                <a
+                  href={gmailWebUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={handleGmailClick}
+                  className="w-full py-2.5 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                >
+                  <Mail className="w-4 h-4 shrink-0" />
+                  <span className="truncate">
+                    {allItemsSent
+                      ? '在网页版 Gmail 中再次发送邮件'
+                      : '在网页版 Gmail 中发送给店主'}
+                  </span>
+                  <ExternalLink className="w-3.5 h-3.5 opacity-80 shrink-0" />
+                </a>
+
+                {/* Action 2: Send via WeChat */}
+                <button
+                  type="button"
+                  onClick={handleWeChatSend}
+                  className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                >
+                  <MessageCircle className="w-4 h-4 shrink-0" />
+                  <span>{isCopied ? '已复制！点击再次查看微信名片' : '微信发送 (复制清单并展示店主二维码)'}</span>
+                </button>
+              </>
+            )}
 
             <p className="text-[11px] text-stone-400 text-center">
-              支持网页版 Gmail 直接发信，或一键复制发微信给店主
+              {isWeChatBrowser
+                ? '提示：在微信内建议优先点击【微信发送】与店主沟通'
+                : '支持网页版 Gmail 直接发信，或一键复制发微信给店主'}
             </p>
           </div>
         )}
