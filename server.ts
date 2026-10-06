@@ -1,0 +1,767 @@
+import express, { Request, Response } from 'express';
+import { createServer as createViteServer } from 'vite';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import nodemailer from 'nodemailer';
+import crypto from 'crypto';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+const ITEMS_FILE = path.join(DATA_DIR, 'inventory.json');
+const ORDERS_FILE = path.join(DATA_DIR, 'orders.json');
+const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
+const TOKENS_FILE = path.join(DATA_DIR, 'admin_tokens.json');
+
+function loadAdminTokens(): Set<string> {
+  const arr = readJsonFile<string[]>(TOKENS_FILE, []);
+  return new Set<string>(arr);
+}
+
+function saveAdminTokens(tokens: Set<string>): void {
+  writeJsonFile(TOKENS_FILE, Array.from(tokens));
+}
+
+// In-memory rate limiting for login attempts
+interface LoginAttemptRecord {
+  count: number;
+  lastAttempt: number;
+  lockedUntil: number;
+}
+const loginAttempts = new Map<string, LoginAttemptRecord>();
+
+function checkLoginRateLimit(ip: string): { allowed: boolean; waitMinutes?: number } {
+  const record = loginAttempts.get(ip);
+  if (!record) return { allowed: true };
+  const now = Date.now();
+  if (record.lockedUntil > now) {
+    const waitMinutes = Math.ceil((record.lockedUntil - now) / (60 * 1000));
+    return { allowed: false, waitMinutes };
+  }
+  // Reset if last attempt was more than 15 minutes ago
+  if (now - record.lastAttempt > 15 * 60 * 1000) {
+    loginAttempts.delete(ip);
+    return { allowed: true };
+  }
+  return { allowed: true };
+}
+
+function recordLoginFailure(ip: string): void {
+  const now = Date.now();
+  const record = loginAttempts.get(ip) || { count: 0, lastAttempt: now, lockedUntil: 0 };
+  record.count += 1;
+  record.lastAttempt = now;
+  if (record.count >= 5) {
+    record.lockedUntil = now + 15 * 60 * 1000; // Lock for 15 minutes after 5 consecutive failures
+  }
+  loginAttempts.set(ip, record);
+}
+
+function recordLoginSuccess(ip: string): void {
+  loginAttempts.delete(ip);
+}
+
+// Default initial items (Clean empty state)
+const DEFAULT_ITEMS: any[] = [];
+
+const DEFAULT_SETTINGS = {
+  sellerEmail: 'shiwokakanaka@gmail.com',
+  storeName: '存货出清',
+  announcement: '因个人搬家与闲置整理，部分珍藏好物与多余存货好价出清！所有物品支持勾选订购，提交后将通过邮件直达我并同步录入后台，成色如实说明，自提或在学校领取均可。',
+  currency: '$',
+  adminPassword: 'admin888',
+  contactWeChat: '月月鸟 (美国)',
+  contactWeChatName: '月月鸟',
+  contactWeChatQr: '/wechat_qr.jpg',
+  pickupLocation: '自提或在学校领取',
+  allowCounterOffer: true,
+  smtpConfig: {
+    enabled: false,
+    host: 'smtp.qq.com',
+    port: 465,
+    secure: true,
+    user: '',
+    pass: '',
+    fromName: '存货集市订单系统'
+  }
+};
+
+function syncToSourceCode(items: any[], settings: any) {
+  try {
+    const safeSettings = { ...settings };
+    delete safeSettings.adminPassword;
+    if (safeSettings.smtpConfig) {
+      safeSettings.smtpConfig = { ...safeSettings.smtpConfig, pass: '' };
+    }
+
+    const tsContent = `import { InventoryItem, StoreSettings } from '../types';
+
+export const INITIAL_SETTINGS: StoreSettings = ${JSON.stringify(safeSettings, null, 2)};
+
+export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
+`;
+    const storeDataPath = path.join(__dirname, 'src', 'data', 'storeData.ts');
+    fs.writeFileSync(storeDataPath, tsContent, 'utf-8');
+  } catch (err) {
+    console.error('Failed to sync to storeData.ts:', err);
+  }
+}
+
+function readJsonFile<T>(filePath: string, fallback: T): T {
+  try {
+    if (fs.existsSync(filePath)) {
+      const data = fs.readFileSync(filePath, 'utf-8');
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.error(`Error reading ${filePath}:`, err);
+  }
+  return fallback;
+}
+
+function escapeHtml(str: any): string {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function writeJsonFile<T>(filePath: string, data: T): void {
+  try {
+    const tmpPath = `${filePath}.${Date.now()}_${Math.random().toString(36).substring(2, 6)}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    console.error(`Error writing ${filePath}:`, err);
+    // Fallback direct write if rename fails on some file systems
+    try {
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+    } catch {}
+  }
+}
+
+// Ensure items file exists
+if (!fs.existsSync(ITEMS_FILE)) {
+  writeJsonFile(ITEMS_FILE, []);
+}
+
+if (!fs.existsSync(ORDERS_FILE)) {
+  writeJsonFile(ORDERS_FILE, []);
+}
+
+if (!fs.existsSync(SETTINGS_FILE)) {
+  writeJsonFile(SETTINGS_FILE, DEFAULT_SETTINGS);
+} else {
+  const currentSettings = readJsonFile<any>(SETTINGS_FILE, DEFAULT_SETTINGS);
+  currentSettings.pickupLocation = '自提或在学校领取';
+  if (!currentSettings.adminPassword) {
+    currentSettings.adminPassword = 'admin888';
+  }
+  writeJsonFile(SETTINGS_FILE, currentSettings);
+}
+
+// Mailer helper
+async function sendNotificationEmail(settings: any, order: any): Promise<{ success: boolean; error?: string }> {
+  const smtp = settings?.smtpConfig;
+  if (!smtp?.enabled || !smtp?.user || !smtp?.pass) {
+    return { success: false, error: 'SMTP 发信服务未配置' };
+  }
+
+  try {
+    const transporter = nodemailer.createTransport({
+      host: smtp.host || 'smtp.qq.com',
+      port: Number(smtp.port) || 465,
+      secure: smtp.secure !== false,
+      auth: {
+        user: smtp.user,
+        pass: smtp.pass,
+      },
+    });
+
+    const itemsListHtml = order.items.map((it: any, idx: number) =>
+      `<tr>
+        <td style="padding: 10px 8px; border-bottom: 1px solid #f0f0f0;">
+          <div style="font-weight: 600; color: #18181b;">${idx + 1}. ${escapeHtml(it.title)}</div>
+          <div style="font-size: 12px; color: #71717a; margin-top: 2px;">成色: ${escapeHtml(it.condition || '良好')}</div>
+        </td>
+        <td style="padding: 10px 8px; border-bottom: 1px solid #f0f0f0; text-align: center; font-family: monospace;">×${Number(it.quantity) || 1}</td>
+        <td style="padding: 10px 8px; border-bottom: 1px solid #f0f0f0; text-align: right; font-weight: 600; font-family: monospace; color: #b45309;">${escapeHtml(settings.currency || '¥')}${(Number(it.price) || 0) * (Number(it.quantity) || 1)}</td>
+      </tr>`
+    ).join('');
+
+    const safeBuyerName = escapeHtml(order.buyerName || '匿名买家');
+    const safeBuyerEmail = escapeHtml(order.buyerEmail || '');
+    const safeBuyerContact = escapeHtml(order.buyerContact || '未填写');
+    const safeDelivery = escapeHtml(order.deliveryMethod || '在学校领取');
+    const safeAddress = escapeHtml(order.shippingAddress || '');
+    const safeNote = escapeHtml(order.note || '');
+
+    const htmlContent = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 620px; margin: 0 auto; padding: 24px; border: 1px solid #e4e4e7; border-radius: 16px; background-color: #ffffff; color: #18181b;">
+        <div style="border-bottom: 2px solid #f4f4f5; padding-bottom: 16px; margin-bottom: 20px;">
+          <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: #d97706; background: #fef3c7; padding: 3px 8px; rounded: 4px;">新存货认购推送</span>
+          <h2 style="font-size: 20px; font-weight: 700; margin: 8px 0 0 0; color: #09090b;">订单编号：${escapeHtml(order.id)}</h2>
+        </div>
+
+        <div style="background-color: #fafaf9; border: 1px solid #f5f5f4; border-radius: 12px; padding: 16px; margin-bottom: 24px; font-size: 13px; line-height: 1.6;">
+          <div style="margin-bottom: 6px;"><strong>买家称呼：</strong> ${safeBuyerName}</div>
+          <div style="margin-bottom: 6px;"><strong>买家邮箱：</strong> ${safeBuyerEmail ? `<a href="mailto:${safeBuyerEmail}" style="color: #2563eb; text-decoration: underline;">${safeBuyerEmail}</a>` : '未填写'}</div>
+          <div style="margin-bottom: 6px;"><strong>电话 / 微信：</strong> <span style="font-family: monospace; background: #f4f4f5; padding: 2px 6px; border-radius: 4px;">${safeBuyerContact}</span></div>
+          <div style="margin-bottom: 6px;"><strong>交付方式：</strong> <span style="color: #047857; font-weight: 600;">${safeDelivery}</span> ${safeAddress ? `(${safeAddress})` : ''}</div>
+          ${safeNote ? `<div style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed #e7e5e4; color: #92400e;"><strong>买家留言：</strong> ${safeNote}</div>` : ''}
+        </div>
+
+        <h3 style="font-size: 14px; font-weight: 600; margin-bottom: 12px; color: #27272a;">认购商品明细 (${order.items.length}件)</h3>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 16px;">
+          <thead>
+            <tr style="background: #f4f4f5; color: #52525b; font-size: 12px;">
+              <th style="padding: 8px; text-align: left;">物品</th>
+              <th style="padding: 8px; text-align: center; width: 60px;">数量</th>
+              <th style="padding: 8px; text-align: right; width: 90px;">小计</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${itemsListHtml}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="2" style="padding: 14px 8px; text-align: right; font-weight: 600; font-size: 15px;">合计总额：</td>
+              <td style="padding: 14px 8px; text-align: right; font-weight: 700; font-size: 18px; font-family: monospace; color: #b45309;">${escapeHtml(settings.currency || '¥')}${order.totalAmount}</td>
+            </tr>
+          </tfoot>
+        </table>
+
+        <div style="border-top: 1px solid #f4f4f5; padding-top: 16px; margin-top: 24px; font-size: 12px; color: #71717a;">
+          <p style="margin: 0;">此邮件已由存货集市自动投递至您的通知邮箱：<strong>${escapeHtml(settings.sellerEmail)}</strong>。</p>
+          <p style="margin: 4px 0 0 0;">您也可以随时登录系统管理后台查看订单处理状态并核销存货。</p>
+        </div>
+      </div>
+    `;
+
+    await transporter.sendMail({
+      from: `"${smtp.fromName || settings.storeName || '存货集市'}" <${smtp.user}>`,
+      to: settings.sellerEmail,
+      subject: `[新存货订单] ${order.buyerName || '买家'} 订购了 ${order.items.length} 件物品 (总额 ${settings.currency || '¥'}${order.totalAmount})`,
+      text: `订单编号: ${order.id}\n买家: ${order.buyerName}\n联系方式: ${order.buyerContact || order.buyerEmail}\n交付方式: ${order.deliveryMethod}\n总额: ${settings.currency || '¥'}${order.totalAmount}`,
+      html: htmlContent,
+    });
+
+    return { success: true };
+  } catch (err: any) {
+    console.error('SMTP send error:', err);
+    return { success: false, error: err?.message || '发送失败' };
+  }
+}
+
+async function startServer() {
+  const app = express();
+  const PORT = 3000;
+
+  app.use(express.json({ limit: '25mb' }));
+
+  // API Endpoints
+  const OWNER_EMAIL = 'shiwokakanaka@gmail.com';
+
+  const isOwnerAuthenticated = (req: Request): boolean => {
+    const adminToken = (req.headers['x-admin-token'] as string || '').trim();
+    const rawCookies = req.headers.cookie || '';
+    let cookieToken = '';
+    rawCookies.split(';').forEach((c) => {
+      const parts = c.split('=');
+      const k = parts[0]?.trim();
+      const v = parts.slice(1).join('=').trim();
+      if (k === 'admin_session_token') cookieToken = decodeURIComponent(v).trim();
+    });
+
+    const activeTokens = loadAdminTokens();
+    return !!((adminToken && activeTokens.has(adminToken)) || (cookieToken && activeTokens.has(cookieToken)));
+  };
+
+  const requireOwnerAuth = (req: Request, res: Response, next: () => void) => {
+    if (isOwnerAuthenticated(req)) {
+      return next();
+    }
+
+    return res.status(403).json({
+      error: '权限受限',
+      message: '店主管理授权已失效或尚未登录，请重新输入密码登录'
+    });
+  };
+
+  // Admin Auth APIs
+  app.get('/api/admin/check-session', (req: Request, res: Response) => {
+    res.json({ authenticated: isOwnerAuthenticated(req) });
+  });
+
+  app.post('/api/admin/login', async (req: Request, res: Response) => {
+    const clientIp = (req.ip || req.socket.remoteAddress || 'unknown').toString();
+    const rateLimit = checkLoginRateLimit(clientIp);
+    if (!rateLimit.allowed) {
+      return res.status(429).json({
+        success: false,
+        error: `连续输错密码次数过多，账号已临时锁定以防暴力破解，请 ${rateLimit.waitMinutes} 分钟后再试`
+      });
+    }
+
+    const { email, password } = req.body || {};
+    const settings = readJsonFile<any>(SETTINGS_FILE, DEFAULT_SETTINGS);
+    const expectedEmail = (settings.sellerEmail || OWNER_EMAIL).toLowerCase().trim();
+    const expectedPassword = settings.adminPassword || 'admin888';
+
+    if (
+      email &&
+      email.toLowerCase().trim() === expectedEmail &&
+      password &&
+      password === expectedPassword
+    ) {
+      recordLoginSuccess(clientIp);
+      const token = `adm_${Date.now()}_${crypto.randomBytes(16).toString('hex')}`;
+      const activeTokens = loadAdminTokens();
+      activeTokens.add(token);
+      saveAdminTokens(activeTokens);
+
+      res.setHeader('Set-Cookie', [
+        `admin_session_token=${token}; Max-Age=86400; Path=/; SameSite=Lax`,
+      ]);
+      return res.json({
+        success: true,
+        token,
+        message: '登录成功'
+      });
+    }
+
+    recordLoginFailure(clientIp);
+    // Artificial 400ms delay to thwart automated fast brute-forcing
+    await new Promise((r) => setTimeout(r, 400));
+
+    return res.status(401).json({
+      success: false,
+      error: '管理员账号或管理密码错误，请核对后重试'
+    });
+  });
+
+  app.post('/api/admin/logout', (req: Request, res: Response) => {
+    const adminToken = (req.headers['x-admin-token'] as string || '').trim();
+    const rawCookies = req.headers.cookie || '';
+    let cookieToken = '';
+    rawCookies.split(';').forEach((c) => {
+      const parts = c.split('=');
+      const k = parts[0]?.trim();
+      const v = parts.slice(1).join('=').trim();
+      if (k === 'admin_session_token') cookieToken = decodeURIComponent(v).trim();
+    });
+
+    const activeTokens = loadAdminTokens();
+    if (adminToken) activeTokens.delete(adminToken);
+    if (cookieToken) activeTokens.delete(cookieToken);
+    saveAdminTokens(activeTokens);
+
+    res.setHeader('Set-Cookie', [
+      `admin_session_token=; Max-Age=0; Path=/; SameSite=Lax`,
+    ]);
+    res.json({ success: true });
+  });
+
+  // 1. Items API
+  app.get('/api/items', (req: Request, res: Response) => {
+    const items = readJsonFile<any[]>(ITEMS_FILE, DEFAULT_ITEMS);
+    res.json(items);
+  });
+
+  app.post('/api/items', requireOwnerAuth, (req: Request, res: Response) => {
+    const items = readJsonFile<any[]>(ITEMS_FILE, DEFAULT_ITEMS);
+    const rawImages = Array.isArray(req.body.images)
+      ? req.body.images
+      : req.body.imageUrl
+      ? [req.body.imageUrl]
+      : [];
+    const validImages = rawImages.filter((img: any) => typeof img === 'string' && img.trim().length > 0);
+    const coverImage = validImages[0] || req.body.imageUrl || '';
+
+    const newItem = {
+      ...req.body,
+      id: req.body.id || `item_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      createdAt: req.body.createdAt || new Date().toISOString(),
+      status: req.body.status || 'available',
+      stock: req.body.stock !== undefined ? Number(req.body.stock) : 1,
+      price: Number(req.body.price) || 0,
+      originalPrice: req.body.originalPrice ? Number(req.body.originalPrice) : undefined,
+      location: req.body.location || '自提或在学校领取',
+      imageUrl: coverImage,
+      images: validImages.length > 0 ? validImages : (coverImage ? [coverImage] : [])
+    };
+    items.unshift(newItem);
+    writeJsonFile(ITEMS_FILE, items);
+    const settings = readJsonFile<any>(SETTINGS_FILE, DEFAULT_SETTINGS);
+    syncToSourceCode(items, settings);
+    res.status(201).json(newItem);
+  });
+
+  app.put('/api/items/:id', requireOwnerAuth, (req: Request, res: Response) => {
+    const { id } = req.params;
+    const items = readJsonFile<any[]>(ITEMS_FILE, DEFAULT_ITEMS);
+    const index = items.findIndex((i: any) => i.id === id);
+    if (index === -1) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+
+    const rawImages = Array.isArray(req.body.images)
+      ? req.body.images
+      : req.body.imageUrl
+      ? [req.body.imageUrl]
+      : (items[index].images || []);
+    const validImages = rawImages.filter((img: any) => typeof img === 'string' && img.trim().length > 0);
+    const coverImage = validImages[0] || req.body.imageUrl || items[index].imageUrl || '';
+
+    items[index] = {
+      ...items[index],
+      ...req.body,
+      price: Number(req.body.price) || items[index].price,
+      stock: req.body.stock !== undefined ? Number(req.body.stock) : items[index].stock,
+      imageUrl: coverImage,
+      images: validImages.length > 0 ? validImages : (coverImage ? [coverImage] : [])
+    };
+    writeJsonFile(ITEMS_FILE, items);
+    const settings = readJsonFile<any>(SETTINGS_FILE, DEFAULT_SETTINGS);
+    syncToSourceCode(items, settings);
+    res.json(items[index]);
+  });
+
+  app.delete('/api/items/:id', requireOwnerAuth, (req: Request, res: Response) => {
+    const { id } = req.params;
+    const items = readJsonFile<any[]>(ITEMS_FILE, DEFAULT_ITEMS);
+    const filtered = items.filter((i: any) => i.id !== id);
+    writeJsonFile(ITEMS_FILE, filtered);
+    const settings = readJsonFile<any>(SETTINGS_FILE, DEFAULT_SETTINGS);
+    syncToSourceCode(filtered, settings);
+    res.json({ success: true, id });
+  });
+
+  // 2. Orders / Inquiries API (Strictly protected by owner authentication for privacy)
+  app.get('/api/orders', requireOwnerAuth, (req: Request, res: Response) => {
+    const orders = readJsonFile<any[]>(ORDERS_FILE, []);
+    res.json(orders);
+  });
+
+  app.post('/api/orders', async (req: Request, res: Response) => {
+    try {
+      const orders = readJsonFile<any[]>(ORDERS_FILE, []);
+      const items = readJsonFile<any[]>(ITEMS_FILE, DEFAULT_ITEMS);
+      const settings = readJsonFile<any>(SETTINGS_FILE, DEFAULT_SETTINGS);
+
+      const orderItems = Array.isArray(req.body.items) ? req.body.items : [];
+      if (orderItems.length === 0) {
+        return res.status(400).json({ success: false, error: '订单物品清单不能为空' });
+      }
+
+      // Aggregate quantities by ID to prevent duplicate entry bypass and validate quantities
+      const itemQtyMap = new Map<string, number>();
+      for (const reqItem of orderItems) {
+        if (!reqItem || typeof reqItem.id !== 'string') {
+          return res.status(400).json({ success: false, error: '商品数据格式错误' });
+        }
+        const requestedQty = Math.floor(Number(reqItem.quantity));
+        if (!Number.isFinite(requestedQty) || requestedQty <= 0) {
+          return res.status(400).json({ success: false, error: '选购商品数量必须大于 0' });
+        }
+        itemQtyMap.set(reqItem.id, (itemQtyMap.get(reqItem.id) || 0) + requestedQty);
+      }
+
+      // 1. Concurrency & Stock Check
+      const verifiedItems: any[] = [];
+      let calculatedTotal = 0;
+
+      for (const [itemId, totalQty] of itemQtyMap.entries()) {
+        const found = items.find((i: any) => i.id === itemId);
+        if (!found) {
+          return res.status(409).json({
+            success: false,
+            error: `您选购的部分商品已下架，请刷新页面查看最新货品`
+          });
+        }
+        if (found.status === 'sold' || (found.stock !== undefined && Number(found.stock) <= 0)) {
+          return res.status(409).json({
+            success: false,
+            error: `手慢了！商品「${found.title}」刚刚已被其他买家成功预订，目前已无存货`
+          });
+        }
+        const currentStock = found.stock !== undefined ? Number(found.stock) : 1;
+        if (currentStock < totalQty) {
+          return res.status(409).json({
+            success: false,
+            error: `商品「${found.title}」剩余库存仅剩 ${currentStock} 件，无法订购 ${totalQty} 件`
+          });
+        }
+
+        const unitPrice = Number(found.price) || 0;
+        calculatedTotal += unitPrice * totalQty;
+        verifiedItems.push({
+          id: found.id,
+          title: found.title,
+          price: unitPrice,
+          quantity: totalQty,
+          condition: found.condition || '良好',
+          imageUrl: found.imageUrl || (found.images && found.images[0]) || ''
+        });
+      }
+
+      // 2. Atomic Stock Deduction
+      for (const [itemId, totalQty] of itemQtyMap.entries()) {
+        const foundIndex = items.findIndex((i: any) => i.id === itemId);
+        if (foundIndex !== -1) {
+          const currentStock = items[foundIndex].stock !== undefined ? Number(items[foundIndex].stock) : 1;
+          const remaining = Math.max(0, currentStock - totalQty);
+          items[foundIndex].stock = remaining;
+          if (remaining <= 0) {
+            items[foundIndex].status = 'sold';
+          }
+        }
+      }
+      writeJsonFile(ITEMS_FILE, items);
+      syncToSourceCode(items, settings);
+
+      const orderId = `ORD-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 900)}`;
+      const newOrder = {
+        id: orderId,
+        createdAt: new Date().toISOString(),
+        status: 'pending', // pending | contacted | confirmed | completed | cancelled
+        buyerName: typeof req.body.buyerName === 'string' ? req.body.buyerName.trim().slice(0, 50) : '匿名买家',
+        buyerEmail: typeof req.body.buyerEmail === 'string' ? req.body.buyerEmail.trim().slice(0, 100) : '',
+        buyerContact: typeof req.body.buyerContact === 'string' ? req.body.buyerContact.trim().slice(0, 100) : '',
+        deliveryMethod: req.body.deliveryMethod || '在学校领取',
+        shippingAddress: typeof req.body.shippingAddress === 'string' ? req.body.shippingAddress.trim().slice(0, 200) : '',
+        note: typeof req.body.note === 'string' ? req.body.note.trim().slice(0, 500) : '',
+        items: verifiedItems,
+        totalAmount: calculatedTotal,
+        sellerEmail: settings.sellerEmail || 'shiwokakanaka@gmail.com',
+        emailPushed: true,
+        smtpDelivered: false,
+        smtpError: null as string | null
+      };
+
+      // Immediately write order to disk to prevent race condition erasure
+      orders.unshift(newOrder);
+      writeJsonFile(ORDERS_FILE, orders);
+
+      // Attempt automatic server SMTP send if configured
+      if (settings.smtpConfig?.enabled) {
+        sendNotificationEmail(settings, newOrder).then((emailResult) => {
+          if (emailResult.success) {
+            newOrder.smtpDelivered = true;
+          } else {
+            newOrder.smtpError = emailResult.error || '发信失败';
+          }
+          const currentOrders = readJsonFile<any[]>(ORDERS_FILE, []);
+          const target = currentOrders.find((o: any) => o.id === newOrder.id);
+          if (target) {
+            target.smtpDelivered = newOrder.smtpDelivered;
+            target.smtpError = newOrder.smtpError;
+            writeJsonFile(ORDERS_FILE, currentOrders);
+          }
+        }).catch(() => {});
+      }
+
+      res.status(201).json({
+        success: true,
+        order: newOrder,
+        message: `意向邮件信息已生成，库存已自动锁定`
+      });
+    } catch (err: any) {
+      console.error('Order creation error:', err);
+      res.status(500).json({ success: false, error: '订单处理失败，请稍后重试' });
+    }
+  });
+
+  app.patch('/api/orders/:id', requireOwnerAuth, (req: Request, res: Response) => {
+    const { id } = req.params;
+    const orders = readJsonFile<any[]>(ORDERS_FILE, []);
+    const index = orders.findIndex((o: any) => o.id === id);
+    if (index === -1) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    orders[index] = { ...orders[index], ...req.body };
+    writeJsonFile(ORDERS_FILE, orders);
+    res.json(orders[index]);
+  });
+
+  // 3. Settings API (Sanitizes password and SMTP secrets when called without owner authentication)
+  app.get('/api/settings', (req: Request, res: Response) => {
+    const settings = readJsonFile<any>(SETTINGS_FILE, DEFAULT_SETTINGS);
+    const authenticated = isOwnerAuthenticated(req);
+    if (!authenticated) {
+      const sanitized = { ...settings };
+      delete sanitized.adminPassword;
+      if (sanitized.smtpConfig) {
+        sanitized.smtpConfig = { ...sanitized.smtpConfig, pass: '' };
+      }
+      return res.json(sanitized);
+    }
+    res.json(settings);
+  });
+
+  app.post('/api/settings', requireOwnerAuth, (req: Request, res: Response) => {
+    const current = readJsonFile<any>(SETTINGS_FILE, DEFAULT_SETTINGS);
+    const body = req.body || {};
+
+    // Only update adminPassword if a non-empty string is provided
+    const updatedPassword = (typeof body.adminPassword === 'string' && body.adminPassword.trim().length > 0)
+      ? body.adminPassword.trim()
+      : current.adminPassword;
+
+    // Only update smtp pass if a non-empty string is provided
+    const updatedSmtpPass = (body.smtpConfig && typeof body.smtpConfig.pass === 'string' && body.smtpConfig.pass.trim().length > 0)
+      ? body.smtpConfig.pass.trim()
+      : current.smtpConfig?.pass;
+
+    const updated = {
+      ...current,
+      ...body,
+      adminPassword: updatedPassword,
+      smtpConfig: {
+        ...(current.smtpConfig || {}),
+        ...(body.smtpConfig || {}),
+        pass: updatedSmtpPass,
+      }
+    };
+    writeJsonFile(SETTINGS_FILE, updated);
+    const items = readJsonFile<any[]>(ITEMS_FILE, DEFAULT_ITEMS);
+    syncToSourceCode(items, updated);
+    res.json(updated);
+  });
+
+  // Persist current data directly to source code
+  app.post('/api/persist-to-source', requireOwnerAuth, (req: Request, res: Response) => {
+    try {
+      const { items, settings } = req.body || {};
+      const currentItems = items && Array.isArray(items) ? items : readJsonFile(ITEMS_FILE, DEFAULT_ITEMS);
+      const currentSettings = settings && typeof settings === 'object' ? settings : readJsonFile(SETTINGS_FILE, DEFAULT_SETTINGS);
+
+      writeJsonFile(ITEMS_FILE, currentItems);
+      writeJsonFile(SETTINGS_FILE, currentSettings);
+      syncToSourceCode(currentItems, currentSettings);
+
+      res.json({
+        success: true,
+        message: '数据已永久固化写入网页源码 (src/data/storeData.ts)！即使更换设备或清除浏览器缓存，所有人打开看到的都是当前最新商品与设置。'
+      });
+    } catch (err: any) {
+      console.error('Persist error:', err);
+      res.status(500).json({ success: false, error: err?.message || '写入源码失败' });
+    }
+  });
+
+  // 4. Test Email API (Restricted to authenticated store owner)
+  app.post('/api/test-email', requireOwnerAuth, async (req: Request, res: Response) => {
+    const settings = readJsonFile<any>(SETTINGS_FILE, DEFAULT_SETTINGS);
+    const testOrder = {
+      id: `TEST-${Date.now().toString().slice(-4)}`,
+      buyerName: '测试买家 (张同学)',
+      buyerEmail: 'buyer-test@example.com',
+      buyerContact: '微信: test_buyer_wx',
+      deliveryMethod: '在学校领取',
+      shippingAddress: '学生公寓3号楼前',
+      note: '这是一条自动测试邮件，用于验证发信功能是否正常。',
+      items: [
+        { title: '测试物品：富士相机', condition: '99新', quantity: 1, price: 1680 }
+      ],
+      totalAmount: 1680
+    };
+
+    const result = await sendNotificationEmail(settings, testOrder);
+    if (result.success) {
+      res.json({ success: true, message: `测试邮件已成功发送至 ${settings.sellerEmail}，请检查收件箱（或垃圾箱）` });
+    } else {
+      res.status(400).json({ success: false, error: result.error || '测试发信失败，请检查 SMTP 账号与授权码' });
+    }
+  });
+
+  // 5. Visitor Cookie Session API (Long-lived 365 days)
+  app.get('/api/visitor/session', (req: Request, res: Response) => {
+    const rawCookies = req.headers.cookie || '';
+    let email = '';
+    let name = '';
+    rawCookies.split(';').forEach((c) => {
+      const parts = c.split('=');
+      const k = parts[0]?.trim();
+      const v = parts.slice(1).join('=').trim();
+      if (k === 'visitor_buyer_email') email = decodeURIComponent(v);
+      if (k === 'visitor_buyer_name') name = decodeURIComponent(v);
+    });
+    res.json({ email, name });
+  });
+
+  app.post('/api/visitor/session', (req: Request, res: Response) => {
+    const { email, name } = req.body;
+    if (email) {
+      const maxAgeSeconds = 365 * 24 * 60 * 60;
+      res.setHeader('Set-Cookie', [
+        `visitor_buyer_email=${encodeURIComponent(email)}; Max-Age=${maxAgeSeconds}; Path=/; SameSite=Lax`,
+        `visitor_buyer_name=${encodeURIComponent(name || '')}; Max-Age=${maxAgeSeconds}; Path=/; SameSite=Lax`,
+      ]);
+    }
+    res.json({ success: true, email, name });
+  });
+
+  app.delete('/api/visitor/session', (req: Request, res: Response) => {
+    res.setHeader('Set-Cookie', [
+      `visitor_buyer_email=; Max-Age=0; Path=/; SameSite=Lax`,
+      `visitor_buyer_name=; Max-Age=0; Path=/; SameSite=Lax`,
+    ]);
+    res.json({ success: true });
+  });
+
+  // 6. Reset Data API (Protected: strictly requires owner authentication and preserves owner credentials)
+  app.post('/api/data/reset', requireOwnerAuth, (req: Request, res: Response) => {
+    const currentSettings = readJsonFile<any>(SETTINGS_FILE, DEFAULT_SETTINGS);
+    writeJsonFile(ITEMS_FILE, DEFAULT_ITEMS);
+    writeJsonFile(ORDERS_FILE, []);
+    // Preserve owner password and email so a reset can never be used as a backdoor to restore admin888
+    const preservedSettings = {
+      ...DEFAULT_SETTINGS,
+      sellerEmail: currentSettings.sellerEmail || DEFAULT_SETTINGS.sellerEmail,
+      adminPassword: currentSettings.adminPassword || DEFAULT_SETTINGS.adminPassword,
+      contactWeChat: currentSettings.contactWeChat || DEFAULT_SETTINGS.contactWeChat,
+      contactWeChatName: currentSettings.contactWeChatName || DEFAULT_SETTINGS.contactWeChatName,
+      contactWeChatQr: currentSettings.contactWeChatQr || DEFAULT_SETTINGS.contactWeChatQr,
+    };
+    writeJsonFile(SETTINGS_FILE, preservedSettings);
+    syncToSourceCode(DEFAULT_ITEMS, preservedSettings);
+    res.json({ success: true, message: '数据已安全重置清空，店主密码与身份已受保护保持不变' });
+  });
+
+  // Serve static assets from public directory
+  app.use(express.static(path.join(__dirname, 'public')));
+
+  // Setup Vite in middleware mode for dev
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(__dirname, 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req: Request, res: Response) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
+  });
+}
+
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});
