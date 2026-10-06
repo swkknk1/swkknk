@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
+import os from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -756,8 +757,27 @@ async function startServer() {
     });
   }
 
+  function getLocalIp(): string {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name] || []) {
+        if (iface.family === 'IPv4' && !iface.internal) {
+          if (iface.address.startsWith('192.168.') || iface.address.startsWith('10.')) {
+            return iface.address;
+          }
+        }
+      }
+    }
+    return '192.168.1.46';
+  }
+
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
+    const localIp = getLocalIp();
+    console.log(`\n======================================================`);
+    console.log(`  🚀 本地网站服务已成功运行！`);
+    console.log(`  💻 电脑本机浏览器访问:   http://localhost:${PORT}`);
+    console.log(`  📱 同局域网手机浏览器访问: http://${localIp}:${PORT}`);
+    console.log(`======================================================\n`);
   });
 }
 
