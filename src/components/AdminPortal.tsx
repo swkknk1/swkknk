@@ -683,7 +683,7 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
                         <button
                           type="button"
                           onClick={() => handleSetAsCover(idx)}
-                          className="absolute top-1.5 left-1.5 z-10 bg-black/75 hover:bg-amber-600 text-white text-[10px] font-medium px-2 py-0.5 rounded shadow-xs transition-colors opacity-90 group-hover:opacity-100 flex items-center gap-1 cursor-pointer"
+                          className="absolute top-1.5 left-1.5 z-10 bg-black/75 hover:bg-amber-600 text-white text-[10px] font-medium px-2 py-0.5 rounded shadow-xs transition-colors opacity-100 sm:opacity-90 sm:group-hover:opacity-100 flex items-center gap-1 cursor-pointer"
                           title="点击设为封面"
                         >
                           <Star className="w-3 h-3" />
@@ -696,8 +696,8 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
                         {idx + 1}
                       </div>
 
-                      {/* Controls on Hover */}
-                      <div className="absolute top-1.5 right-1.5 z-10 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      {/* Controls on Hover / Mobile Touch */}
+                      <div className="absolute top-1.5 right-1.5 z-10 flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                         {idx > 0 && (
                           <button
                             type="button"

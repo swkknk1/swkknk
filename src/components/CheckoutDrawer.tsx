@@ -564,7 +564,7 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
 
         {/* Footer Actions */}
         {!submittedOrder && resolvedItems.length > 0 && (
-          <div className="p-4 border-t border-stone-200 bg-stone-50/50 space-y-2">
+          <div className="p-4 pb-[max(1rem,env(safe-area-inset-bottom))] border-t border-stone-200 bg-stone-50/50 space-y-2">
             {isWeChatBrowser ? (
               <>
                 {/* WeChat Browser Priority: Send via WeChat */}
@@ -635,6 +635,7 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
           onClose={() => setIsWeChatModalOpen(false)}
           customQrUrl={contactWeChatQr}
           copyNotice={true}
+          wechatId={contactWeChatName}
         />
       </div>
     </div>

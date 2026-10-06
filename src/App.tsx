@@ -442,7 +442,7 @@ export default function App() {
           />
         ) : (
           /* Buyer Storefront Mode */
-          <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-8 space-y-5 sm:space-y-8">
+          <div className={`max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-8 space-y-5 sm:space-y-8 ${cart.length > 0 ? 'pb-24 sm:pb-20' : ''}`}>
             {/* Storefront Hero & Announcement */}
             <section className="bg-white rounded-2xl border border-stone-200/80 p-4 sm:p-6 md:p-8 shadow-xs">
               <div className="max-w-3xl">
@@ -770,7 +770,7 @@ export default function App() {
       {!isAdminView && cart.length > 0 && !isCartOpen && (
         <aside
           aria-label="选购清单浮动提醒"
-          className="fixed bottom-3 sm:bottom-5 left-1/2 -translate-x-1/2 z-30 max-w-lg w-[94%] sm:w-[90%] bg-stone-900 text-white rounded-2xl shadow-xl px-3.5 py-2.5 sm:px-5 sm:py-3 flex items-center justify-between gap-2 animate-in slide-in-from-bottom-4 duration-200"
+          className="fixed bottom-[max(0.75rem,env(safe-area-inset-bottom))] sm:bottom-5 left-1/2 -translate-x-1/2 z-30 max-w-lg w-[94%] sm:w-[90%] bg-stone-900 text-white rounded-2xl shadow-xl px-3.5 py-2.5 sm:px-5 sm:py-3 flex items-center justify-between gap-2 animate-in slide-in-from-bottom-4 duration-200"
         >
           <div className="min-w-0">
             <div className="text-[11px] sm:text-xs text-stone-400 truncate">
@@ -827,6 +827,7 @@ export default function App() {
         isOpen={isWeChatModalOpen}
         onClose={() => setIsWeChatModalOpen(false)}
         customQrUrl={settings.contactWeChatQr || '/wechat_qr.jpg'}
+        wechatId={settings.contactWeChatName || '月月鸟'}
       />
 
       {/* Visitor User Email Setup Modal */}

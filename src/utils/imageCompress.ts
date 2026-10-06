@@ -2,7 +2,7 @@
  * Compresses an uploaded image file on the client-side using HTML5 Canvas.
  * Produces a high-quality, lightweight Base64 data URL suitable for immediate saving.
  */
-export async function compressImageFile(file: File, maxDimension = 1200, quality = 0.82): Promise<string> {
+export async function compressImageFile(file: File, maxDimension = 1000, quality = 0.78): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
