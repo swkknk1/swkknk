@@ -23,25 +23,6 @@ export const INITIAL_SETTINGS: StoreSettings = {
 
 export const INITIAL_ITEMS: InventoryItem[] = [
   {
-    "id": "item_1",
-    "title": "富士胶片旁轴复古机械相机（99新收藏级）",
-    "category": "数码摄影",
-    "price": 1680,
-    "originalPrice": 3200,
-    "condition": "99新 (仅拆封试机)",
-    "stock": 1,
-    "status": "available",
-    "description": "私人收藏出清。全金属机械质感，快门声音清脆干脆，外观成色极佳无任何磕碰掉漆。原厂配件、背带、双电池与皮套齐全，箱说全。成色如图，欢迎自提或在学校面交验机。",
-    "imageUrl": "https://images.unsplash.com/photo-1516035069371-29a1b244cc32?auto=format&fit=crop&w=800&q=80",
-    "tags": [
-      "复古胶片",
-      "箱说全",
-      "极品成色"
-    ],
-    "location": "自提或在学校领取",
-    "createdAt": "2026-09-20T00:00:00.000Z"
-  },
-  {
     "id": "item_2",
     "title": "客制化铝坨坨机械键盘 75配列（润轴+消音棉）",
     "category": "电脑外设",
