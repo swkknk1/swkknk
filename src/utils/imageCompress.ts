@@ -46,3 +46,45 @@ export async function compressImageFile(file: File, maxDimension = 1000, quality
     reader.readAsDataURL(file);
   });
 }
+
+/**
+ * Rotates a Base64 image data URL by specified degrees (-90 for counter-clockwise / 向左旋转, 90 for clockwise / 向右旋转)
+ * using HTML5 Canvas, returning the new rotated Base64 image.
+ */
+export async function rotateBase64Image(dataUrl: string, degrees = -90, quality = 0.85): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(dataUrl);
+        return;
+      }
+
+      const rads = (degrees * Math.PI) / 180;
+      const is90or270 = Math.abs(degrees % 180) === 90;
+
+      if (is90or270) {
+        canvas.width = img.height;
+        canvas.height = img.width;
+      } else {
+        canvas.width = img.width;
+        canvas.height = img.height;
+      }
+
+      ctx.fillStyle = '#f8f8f6';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate(rads);
+      ctx.drawImage(img, -img.width / 2, -img.height / 2);
+
+      const rotatedDataUrl = canvas.toDataURL('image/jpeg', quality);
+      resolve(rotatedDataUrl);
+    };
+    img.onerror = (err) => reject(err);
+    img.src = dataUrl;
+  });
+}

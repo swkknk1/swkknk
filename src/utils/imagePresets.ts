@@ -53,6 +53,24 @@ export const PRESET_IMAGES: ImagePreset[] = [
     name: '精装艺术设计书籍',
     category: '图书手办',
     url: 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=800&q=80'
+  },
+  {
+    id: '3d_printing',
+    name: '3D打印定制与耗材',
+    category: '定制服务',
+    url: 'https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&w=800&q=80'
+  },
+  {
+    id: 'pc_service',
+    name: '电脑维修与极客硬件',
+    category: '定制服务',
+    url: 'https://images.unsplash.com/photo-1597872200969-2b65d56bd16b?auto=format&fit=crop&w=800&q=80'
+  },
+  {
+    id: 'key_fob',
+    name: '门禁卡与电子钥匙复制',
+    category: '定制服务',
+    url: 'https://images.unsplash.com/photo-1558002038-1055907df827?auto=format&fit=crop&w=800&q=80'
   }
 ];
 
@@ -60,10 +78,11 @@ export const CATEGORIES = [
   '全部存货',
   '数码摄影',
   '电脑外设',
-  '箱包服饰',
+  '定制服务',
   '生活美学',
   '家居好物',
   '图书手办',
+  '箱包服饰',
   '其他闲置'
 ];
 
@@ -73,5 +92,6 @@ export const CONDITIONS = [
   '95新 (轻微使用痕迹)',
   '9成新 (功能完好)',
   '8成新 (有明显磨损但功能正常)',
-  '伊拉克战损 / 实用配件'
+  '伊拉克战损 / 实用配件',
+  '专业定制 / 按需提供'
 ];

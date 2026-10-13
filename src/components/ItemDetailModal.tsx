@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, CheckSquare, Square, Mail, MapPin, Tag, ExternalLink, ChevronLeft, ChevronRight, Camera } from 'lucide-react';
 import { InventoryItem } from '../types';
 import { ItemImage } from './ItemImage';
+import { FormattedDescription } from './FormattedDescription';
 
 interface ItemDetailModalProps {
   item: InventoryItem | null;
@@ -192,16 +193,22 @@ export const ItemDetailModal: React.FC<ItemDetailModalProps> = ({
                     </span>
                   </>
                 )}
+                <span className="text-[11px] font-medium text-amber-900 bg-amber-50 border border-amber-200/80 px-2 py-0.5 rounded-full ml-auto shadow-2xs">
+                  参考定价 · 诚心可小刀
+                </span>
               </div>
 
               {/* Description */}
               <div className="mt-4 pt-4 border-t border-stone-100">
-                <h4 className="text-xs font-semibold text-stone-400 uppercase tracking-wider mb-1.5">
-                  物品实况与说明
-                </h4>
-                <p className="text-sm text-stone-600 leading-relaxed whitespace-pre-line">
-                  {item.description || '暂无详细描述，如有疑问可直接发信或勾选后提交询问。'}
-                </p>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-xs font-bold text-stone-500 uppercase tracking-wider">
+                    物品实况与详细说明
+                  </h4>
+                  <span className="text-[11px] text-stone-400">成色如实说明</span>
+                </div>
+                <div className="bg-stone-50/70 border border-stone-100 rounded-xl p-3 sm:p-4">
+                  <FormattedDescription description={item.description} />
+                </div>
               </div>
 
               {/* Logistics & Location */}

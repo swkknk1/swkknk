@@ -39,10 +39,29 @@ export const api = {
     if (local !== null) {
       try {
         const parsed = JSON.parse(local);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // If INITIAL_ITEMS has more items (e.g. newly published on cloud / Netlify),
+          // prioritize INITIAL_ITEMS and refresh localStorage so users never get stuck with stale items!
+          if (parsed.length < (INITIAL_ITEMS || []).length) {
+            localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(INITIAL_ITEMS));
+            return INITIAL_ITEMS;
+          }
+          const localIds = new Set(parsed.map((i: any) => i.id));
+          const missingInLocal = (INITIAL_ITEMS || []).filter((i) => !localIds.has(i.id));
+          if (missingInLocal.length > 0) {
+            const merged = [...missingInLocal, ...parsed];
+            localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(merged));
+            return merged;
+          }
+          return parsed;
+        }
       } catch {}
     }
-    return INITIAL_ITEMS || [];
+    if (INITIAL_ITEMS && INITIAL_ITEMS.length > 0) {
+      localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(INITIAL_ITEMS));
+      return INITIAL_ITEMS;
+    }
+    return [];
   },
 
   async createItem(item: Partial<InventoryItem>): Promise<InventoryItem> {
@@ -110,6 +129,13 @@ export const api = {
       }
 
       if (res.status === 401 || res.status === 403) {
+        const current = await this.getItems();
+        const index = current.findIndex((i) => i.id === id);
+        if (index !== -1) {
+          const updated = { ...current[index], ...updates };
+          current[index] = updated;
+          localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(current));
+        }
         const err = await res.json().catch(() => ({}));
         throw new Error(err.message || err.error || '更新商品失败，请确认店主管理登录状态');
       }

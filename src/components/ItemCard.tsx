@@ -2,6 +2,7 @@ import React from 'react';
 import { Check, CheckSquare, Square, Eye, Camera } from 'lucide-react';
 import { InventoryItem } from '../types';
 import { ItemImage } from './ItemImage';
+import { getItemCardHighlights } from './FormattedDescription';
 
 interface ItemCardProps {
   item: InventoryItem;
@@ -21,6 +22,8 @@ export const ItemCard: React.FC<ItemCardProps> = ({
   const isAvailable = item.status === 'available' && item.stock > 0;
   const isReserved = item.status === 'reserved';
   const isSold = item.status === 'sold' || item.stock <= 0;
+
+  const { coreFeature, tags: highlightTags } = getItemCardHighlights(item, currency);
 
   return (
     <div
@@ -92,16 +95,17 @@ export const ItemCard: React.FC<ItemCardProps> = ({
       {/* Content Area with touch-friendly padding */}
       <div className="p-3 sm:p-4 flex-1 flex flex-col justify-between">
         <div>
-          {/* Metadata Row: Clean Unboxed Text */}
-          <div className="flex items-center gap-1 text-[11px] sm:text-xs text-stone-500 mb-1 flex-wrap">
-            <span className="font-medium text-stone-700">{item.category}</span>
-            <span aria-hidden="true" className="text-stone-300">·</span>
-            <span>{item.condition}</span>
+          {/* Metadata Row: Category, Condition & Stock */}
+          <div className="flex items-center justify-between gap-1 text-[11px] sm:text-xs text-stone-500 mb-1">
+            <div className="flex items-center gap-1 min-w-0">
+              <span className="font-medium text-stone-700 truncate">{item.category}</span>
+              <span aria-hidden="true" className="text-stone-300">·</span>
+              <span className="text-stone-600 truncate">{item.condition}</span>
+            </div>
             {item.stock > 1 && (
-              <>
-                <span aria-hidden="true" className="text-stone-300">·</span>
-                <span className="hidden xs:inline">存量 {item.stock}</span>
-              </>
+              <span className="text-[10px] font-mono text-amber-800 bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200/60 shrink-0">
+                存量 {item.stock}
+              </span>
             )}
           </div>
 
@@ -113,11 +117,33 @@ export const ItemCard: React.FC<ItemCardProps> = ({
             {item.title}
           </h3>
 
-          {/* Short Description (hidden on ultra-compact mobile dual-grid to save vertical space, shown on sm+) */}
-          {item.description && (
-            <p className="hidden sm:block mt-1 text-xs text-stone-500 line-clamp-2 leading-relaxed">
-              {item.description}
-            </p>
+          {/* Core Feature Line: 1-line key selling point without messy wrap */}
+          {coreFeature && (
+            <div className="mt-1 flex items-center gap-1.5 text-[11px] sm:text-xs text-stone-600">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-600/80 shrink-0" />
+              <span className="truncate leading-tight">{coreFeature}</span>
+            </div>
+          )}
+
+          {/* Focus Tags / Badges Row (Condition, Key Props, Savings) */}
+          {highlightTags.length > 0 && (
+            <div className="mt-1.5 flex items-center gap-1.5 overflow-hidden flex-nowrap">
+              {highlightTags.slice(0, 3).map((tag, idx) => {
+                const isDiscount = tag.startsWith('省') || tag.startsWith('立省');
+                return (
+                  <span
+                    key={idx}
+                    className={`text-[10px] sm:text-[11px] font-medium px-1.5 py-0.5 rounded leading-tight truncate shrink-0 ${
+                      isDiscount
+                        ? 'bg-amber-100 text-amber-900 border border-amber-200/70 font-semibold'
+                        : 'bg-stone-100 text-stone-600 border border-stone-200/50'
+                    }`}
+                  >
+                    {tag}
+                  </span>
+                );
+              })}
+            </div>
           )}
         </div>
 

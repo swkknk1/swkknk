@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Package, Camera, Keyboard, ShoppingBag, Coffee, Headphones, BookOpen, Layers } from 'lucide-react';
+import { Package, Camera, Keyboard, ShoppingBag, Coffee, Headphones, BookOpen, Layers, Wrench } from 'lucide-react';
 
 interface ItemImageProps {
   src?: string;
@@ -15,6 +15,9 @@ function getCategoryIcon(category?: string) {
       return Camera;
     case '电脑外设':
       return Keyboard;
+    case '定制服务':
+    case '服务':
+      return Wrench;
     case '箱包服饰':
       return ShoppingBag;
     case '生活美学':

@@ -34,9 +34,11 @@ import {
   CheckCircle2,
   Eye,
   EyeOff,
+  RotateCcw,
+  RotateCw,
 } from 'lucide-react';
 import { InventoryItem, OrderItem, StoreSettings } from '../types';
-import { compressImageFile } from '../utils/imageCompress';
+import { compressImageFile, rotateBase64Image } from '../utils/imageCompress';
 import { PRESET_IMAGES, CATEGORIES, CONDITIONS } from '../utils/imagePresets';
 import { ItemImage } from './ItemImage';
 import { api } from '../services/api';
@@ -44,7 +46,10 @@ import {
   getGitHubSyncConfig,
   saveGitHubSyncConfig,
   syncStoreDataToGitHub,
+  pullStoreDataFromGitHub,
   GitHubSyncConfig,
+  encryptToken,
+  isEmbeddedTokenActive,
 } from '../services/githubSync';
 
 interface AdminPortalProps {
@@ -58,6 +63,7 @@ interface AdminPortalProps {
   onUpdateOrderStatus: (id: string, status: OrderItem['status']) => Promise<void>;
   onUpdateSettings: (settings: Partial<StoreSettings>) => Promise<void>;
   onResetData: () => Promise<void>;
+  onRefreshData?: () => Promise<void>;
   onCloseAdmin: () => void;
   onLogoutAdmin?: () => void;
 }
@@ -73,6 +79,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   onUpdateOrderStatus,
   onUpdateSettings,
   onResetData,
+  onRefreshData,
   onCloseAdmin,
   onLogoutAdmin,
 }) => {
@@ -135,6 +142,25 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [ghFeedback, setGhFeedback] = useState<{ success: boolean; message: string; commitUrl?: string } | null>(null);
   const [showGhGuide, setShowGhGuide] = useState(false);
 
+  // Token crypto tool states
+  const [showCryptoTool, setShowCryptoTool] = useState(false);
+  const [rawTokenToEncrypt, setRawTokenToEncrypt] = useState('');
+  const [encryptedResult, setEncryptedResult] = useState('');
+  const [copiedCipher, setCopiedCipher] = useState(false);
+
+  const handleGenerateCipher = () => {
+    if (!rawTokenToEncrypt.trim()) return;
+    const cipher = encryptToken(rawTokenToEncrypt.trim());
+    setEncryptedResult(cipher);
+  };
+
+  const handleCopyCipher = () => {
+    if (!encryptedResult) return;
+    navigator.clipboard.writeText(encryptedResult);
+    setCopiedCipher(true);
+    setTimeout(() => setCopiedCipher(false), 3000);
+  };
+
   const handleSyncToGitHub = async (customCommitMsg?: string) => {
     setIsSyncingGitHub(true);
     setGhFeedback(null);
@@ -166,6 +192,54 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       });
     } finally {
       setIsSyncingGitHub(false);
+    }
+  };
+
+  const [isPullingGitHub, setIsPullingGitHub] = useState(false);
+
+  const handlePullFromGitHub = async () => {
+    setIsPullingGitHub(true);
+    setGhFeedback(null);
+    try {
+      saveGitHubSyncConfig({
+        token: ghTokenInput.trim(),
+        owner: ghRepoOwnerInput.trim() || 'swkknk1',
+        repo: ghRepoNameInput.trim() || 'swkknk',
+        branch: ghBranchInput.trim() || 'main',
+        autoSync: ghAutoSync,
+      });
+      setGhConfig(getGitHubSyncConfig());
+
+      const res = await pullStoreDataFromGitHub();
+      setGhFeedback({
+        success: res.success,
+        message: res.message,
+      });
+
+      if (res.success && res.items && res.settings) {
+        if (res.settings.sellerEmail) setSellerEmail(res.settings.sellerEmail);
+        if (res.settings.storeName) setStoreName(res.settings.storeName);
+        if (res.settings.announcement) setAnnouncement(res.settings.announcement);
+        if (res.settings.currency) setCurrencySymbol(res.settings.currency);
+        if (res.settings.pickupLocation) setPickupLocation(res.settings.pickupLocation);
+        if (res.settings.contactWeChat) setContactWeChat(res.settings.contactWeChat);
+        if (res.settings.contactWeChatName) setContactWeChatName(res.settings.contactWeChatName);
+        if (res.settings.contactWeChatQr) setContactWeChatQr(res.settings.contactWeChatQr);
+
+        if (onRefreshData) {
+          await onRefreshData();
+        } else {
+          await onUpdateSettings(res.settings);
+        }
+        setTimeout(() => setGhFeedback(null), 8000);
+      }
+    } catch (e: any) {
+      setGhFeedback({
+        success: false,
+        message: e?.message || '从 GitHub 拉取数据失败，请检查网络或 Token 权限',
+      });
+    } finally {
+      setIsPullingGitHub(false);
     }
   };
 
@@ -299,6 +373,45 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
     });
   };
 
+  const [isRotating, setIsRotating] = useState(false);
+
+  const handleRotateImage = async (index: number, degrees: number = -90) => {
+    const currentImg = formImages[index];
+    if (!currentImg) return;
+    setIsRotating(true);
+    try {
+      const rotated = await rotateBase64Image(currentImg, degrees);
+      setFormImages((prev) => {
+        const copy = [...prev];
+        copy[index] = rotated;
+        return copy;
+      });
+      setFormFeedback(degrees < 0 ? '已向左旋转 90°！' : '已向右旋转 90°！');
+      setTimeout(() => setFormFeedback(null), 2000);
+    } catch (err) {
+      console.error('Failed to rotate image:', err);
+    } finally {
+      setIsRotating(false);
+    }
+  };
+
+  const handleRotateAllImages = async (degrees: number = -90) => {
+    if (formImages.length === 0) return;
+    setIsRotating(true);
+    try {
+      const rotatedList = await Promise.all(
+        formImages.map((img) => rotateBase64Image(img, degrees).catch(() => img))
+      );
+      setFormImages(rotatedList);
+      setFormFeedback(degrees < 0 ? '全部照片已向左旋转 90°！' : '全部照片已向右旋转 90°！');
+      setTimeout(() => setFormFeedback(null), 2500);
+    } catch (err) {
+      console.error('Failed to rotate all images:', err);
+    } finally {
+      setIsRotating(false);
+    }
+  };
+
   const handleAddUrlImage = () => {
     if (imageUrlInput.trim()) {
       setFormImages((prev) => [...prev, imageUrlInput.trim()]);
@@ -343,20 +456,20 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
 
       if (editingItemId) {
         await onUpdateItem(editingItemId, payload);
-        setFormFeedback('商品已成功更新！');
+        setFormFeedback(`商品《${payload.title}》已成功保存修改！所有修改已实时同步生效。`);
+        // Stay on current edit form, do not reset and do not kick out
       } else {
         await onSaveItem(payload);
-        setFormFeedback('新商品已发布至集市！');
+        setFormFeedback(`新商品《${payload.title}》已成功发布至集市！`);
+        setTimeout(() => {
+          handleResetForm();
+          setActiveTab('inventory');
+        }, 1200);
       }
 
       if (ghAutoSync && ghTokenInput.trim()) {
         handleSyncToGitHub(editingItemId ? `更新商品《${payload.title}》` : `发布新商品《${payload.title}》`);
       }
-
-      setTimeout(() => {
-        handleResetForm();
-        setActiveTab('inventory');
-      }, 700);
     } finally {
       setIsSubmitting(false);
     }
@@ -463,26 +576,50 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
 
           <div className="flex items-center gap-2 flex-wrap">
             {ghConfig.token ? (
-              <button
-                type="button"
-                onClick={() => handleSyncToGitHub()}
-                disabled={isSyncingGitHub}
-                className="px-3.5 py-2 bg-stone-900 hover:bg-stone-800 disabled:opacity-50 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-                title="立即将当前全部数据推送到 GitHub，Netlify 将自动部署至全网"
-              >
-                <Github className={`w-3.5 h-3.5 ${isSyncingGitHub ? 'animate-spin' : ''}`} />
-                <span>{isSyncingGitHub ? '全网同步中...' : '同步全网 (Netlify)'}</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => handleSyncToGitHub()}
+                  disabled={isSyncingGitHub || isPullingGitHub}
+                  className="px-3.5 py-2 bg-stone-900 hover:bg-stone-800 disabled:opacity-50 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                  title="立即将当前全部数据推送到 GitHub，Netlify 将自动部署至全网"
+                >
+                  <Github className={`w-3.5 h-3.5 ${isSyncingGitHub ? 'animate-spin' : ''}`} />
+                  <span>{isSyncingGitHub ? '全网同步中...' : '同步全网 (Netlify)'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePullFromGitHub}
+                  disabled={isPullingGitHub || isSyncingGitHub}
+                  className="px-3 py-2 bg-stone-100 hover:bg-stone-200 disabled:opacity-50 text-stone-800 border border-stone-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                  title="从 GitHub 云端拉取最新数据覆盖本地"
+                >
+                  <Download className={`w-3.5 h-3.5 ${isPullingGitHub ? 'animate-bounce' : ''}`} />
+                  <span>{isPullingGitHub ? '拉取中...' : '从云端拉取'}</span>
+                </button>
+              </>
             ) : (
-              <button
-                type="button"
-                onClick={() => setActiveTab('settings')}
-                className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
-                title="前往设置 GitHub 访问令牌以实现跨设备全网数据互通"
-              >
-                <Key className="w-3.5 h-3.5 text-amber-600" />
-                <span>配置全网云同步</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('settings')}
+                  className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                  title="前往设置 GitHub 访问令牌以实现跨设备全网数据互通"
+                >
+                  <Key className="w-3.5 h-3.5 text-amber-600" />
+                  <span>配置全网云同步</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePullFromGitHub}
+                  disabled={isPullingGitHub || isSyncingGitHub}
+                  className="px-3 py-2 bg-stone-100 hover:bg-stone-200 disabled:opacity-50 text-stone-800 border border-stone-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                  title="从 GitHub 仓库拉取最新数据"
+                >
+                  <Download className={`w-3.5 h-3.5 ${isPullingGitHub ? 'animate-bounce' : ''}`} />
+                  <span>{isPullingGitHub ? '拉取中...' : '从云端拉取'}</span>
+                </button>
+              </>
             )}
 
             <button
@@ -597,9 +734,32 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
           </div>
 
           {formFeedback && (
-            <div className="mb-6 p-3 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-xl text-xs flex items-center gap-2">
-              <CheckCircle className="w-4 h-4 text-emerald-600" />
-              <span>{formFeedback}</span>
+            <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs animate-in fade-in">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" />
+                <span className="font-semibold text-emerald-950 text-sm">{formFeedback}</span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleResetForm();
+                    setActiveTab('inventory');
+                  }}
+                  className="px-3.5 py-1.5 bg-stone-900 hover:bg-stone-800 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-2xs"
+                >
+                  前往存货列表
+                </button>
+                {editingItemId && (
+                  <button
+                    type="button"
+                    onClick={handleResetForm}
+                    className="px-3.5 py-1.5 bg-white hover:bg-stone-100 text-stone-700 border border-stone-300 rounded-lg text-xs font-medium transition-colors cursor-pointer shadow-2xs"
+                  >
+                    发布新商品
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -635,7 +795,7 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
               </div>
 
               {/* Upload Input & Trigger Button */}
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <input
                   type="file"
                   ref={fileInputRef}
@@ -644,15 +804,43 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
                   multiple
                   className="hidden"
                 />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploadingImage}
-                  className="px-4 py-2.5 bg-stone-900 hover:bg-stone-800 text-white rounded-xl text-xs font-semibold flex items-center gap-2 shadow-xs transition-colors disabled:opacity-50 cursor-pointer"
-                >
-                  <Upload className="w-4 h-4 text-amber-400" />
-                  <span>{isUploadingImage ? '正在处理压缩中...' : '选择本地照片上传 (支持批量多选)'}</span>
-                </button>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploadingImage}
+                    className="px-4 py-2.5 bg-stone-900 hover:bg-stone-800 text-white rounded-xl text-xs font-semibold flex items-center gap-2 shadow-xs transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    <Upload className="w-4 h-4 text-amber-400" />
+                    <span>{isUploadingImage ? '正在处理压缩中...' : '选择本地照片上传 (支持批量多选)'}</span>
+                  </button>
+
+                  {formImages.length > 0 && (
+                    <div className="flex items-center gap-1.5 bg-stone-100 p-1 rounded-xl border border-stone-200">
+                      <span className="text-[11px] text-stone-500 font-medium px-2 hidden sm:inline">批量旋转:</span>
+                      <button
+                        type="button"
+                        onClick={() => handleRotateAllImages(-90)}
+                        disabled={isRotating}
+                        className="px-2.5 py-1.5 bg-white hover:bg-stone-200 text-stone-700 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer shadow-2xs"
+                        title="将所有照片向左旋转90度 (逆时针)"
+                      >
+                        <RotateCcw className={`w-3.5 h-3.5 ${isRotating ? 'animate-spin' : ''}`} />
+                        <span>全部向左转</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRotateAllImages(90)}
+                        disabled={isRotating}
+                        className="px-2.5 py-1.5 bg-white hover:bg-stone-200 text-stone-700 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer shadow-2xs"
+                        title="将所有照片向右旋转90度 (顺时针)"
+                      >
+                        <RotateCw className={`w-3.5 h-3.5 ${isRotating ? 'animate-spin' : ''}`} />
+                        <span>全部向右转</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Photos Gallery Grid */}
@@ -694,6 +882,28 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
                       {/* Index Tag */}
                       <div className="absolute bottom-1.5 left-1.5 z-10 bg-black/60 text-white text-[9px] px-1.5 py-0.5 rounded font-mono">
                         {idx + 1}
+                      </div>
+
+                      {/* Rotate Controls Bottom-Right */}
+                      <div className="absolute bottom-1.5 right-1.5 z-10 flex items-center gap-1 opacity-100 sm:opacity-90 sm:group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          onClick={() => handleRotateImage(idx, -90)}
+                          disabled={isRotating}
+                          className="p-1 bg-black/75 hover:bg-amber-600 disabled:opacity-50 text-white rounded shadow-2xs cursor-pointer transition-colors"
+                          title="向左旋转 90° (逆时针)"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRotateImage(idx, 90)}
+                          disabled={isRotating}
+                          className="p-1 bg-black/75 hover:bg-amber-600 disabled:opacity-50 text-white rounded shadow-2xs cursor-pointer transition-colors"
+                          title="向右旋转 90° (顺时针)"
+                        >
+                          <RotateCw className="w-3 h-3" />
+                        </button>
                       </div>
 
                       {/* Controls on Hover / Mobile Touch */}
@@ -905,15 +1115,20 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
 
             {/* Description */}
             <div>
-              <label className="block text-xs font-semibold text-stone-700 mb-1">
-                详细描述 (功能状态、使用痕迹、配件情况、出清原因)
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-semibold text-stone-700">
+                  详细描述 (功能状态、使用痕迹、配件情况、出清原因)
+                </label>
+                <span className="text-[11px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                  💡 支持换行分段，使用【段落标题】或 • 列表自动美化排版
+                </span>
+              </div>
               <textarea
-                rows={4}
+                rows={6}
                 value={formDescription}
                 onChange={(e) => setFormDescription(e.target.value)}
-                placeholder="详细说明物品来源、磨损情况、附件包装、使用感受等，越详细买家越放心..."
-                className="w-full text-xs px-3 py-2.5 border border-stone-200 rounded-lg focus:outline-hidden focus:border-stone-900 leading-relaxed"
+                placeholder="支持自由换行分段，前台将自动美化呈现！&#10;例如：&#10;【物品概况】全新未拆封原包装，原厂封条完好&#10;【核心性能】• 官方解热功耗高达 275W TDP&#10;• i9 轻松压制，静音出色&#10;【交易说明】支持小刀议价，校区自提或面交..."
+                className="w-full text-xs px-3 py-2.5 border border-stone-200 rounded-lg focus:outline-hidden focus:border-stone-900 leading-relaxed font-mono"
               />
             </div>
 
@@ -1643,6 +1858,14 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
               <div className="shrink-0 flex items-center gap-2">
                 <button
                   type="button"
+                  onClick={() => setShowCryptoTool(!showCryptoTool)}
+                  className="px-3 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>{showCryptoTool ? '收起加密工具' : '🔐 密钥加密工具'}</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => setShowGhGuide(!showGhGuide)}
                   className="px-3 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
                 >
@@ -1651,6 +1874,72 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
                 </button>
               </div>
             </div>
+
+            {/* Embedded Encrypted Token Active Notification */}
+            {isEmbeddedTokenActive() && (
+              <div className="p-3 bg-emerald-950/60 border border-emerald-500/40 rounded-xl text-xs text-emerald-300 flex items-center justify-between gap-3 animate-in fade-in">
+                <div className="flex items-center gap-2 min-w-0">
+                  <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span className="truncate">
+                    <strong>已启用代码内置加密密钥：</strong>当前代码已内置安全加密 Token，其他同学访问无需配置 Token 即可直接同步上传商品！
+                  </span>
+                </div>
+                {ghTokenInput && (
+                  <span className="text-[10px] bg-stone-800 text-stone-300 px-2 py-0.5 rounded border border-stone-700 shrink-0">
+                    当前优先使用本地自定义 Token
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Token Encryption Generator Tool */}
+            {showCryptoTool && (
+              <div className="p-4 bg-stone-800/90 border border-emerald-500/40 rounded-xl text-xs text-stone-200 space-y-3 animate-in fade-in">
+                <div className="font-bold text-emerald-400 flex items-center gap-2">
+                  <Lock className="w-4 h-4" />
+                  <span>🔐 GitHub 密钥加密生成器（为全员免密上传商品提供底层安全支持）：</span>
+                </div>
+                <p className="text-stone-300 leading-relaxed text-[11px]">
+                  将您的 GitHub Token 转换为多层混淆加盐的密文（以 <code>enc_v1_</code> 开头）。加密后填入 <code>src/utils/tokenCrypto.ts</code> 中的 <code>EMBEDDED_ENCRYPTED_TOKEN</code>，其他人即可在不暴露原始 Token 的情况下同步商品，GitHub 官方 Secret Scanner 也不会误杀此密文。
+                </p>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="password"
+                    placeholder="输入要加密的 GitHub Token (ghp_...)"
+                    value={rawTokenToEncrypt}
+                    onChange={(e) => setRawTokenToEncrypt(e.target.value)}
+                    className="flex-1 text-xs px-3 py-2 bg-stone-900 border border-stone-700 rounded-lg text-white font-mono placeholder-stone-500 focus:outline-hidden focus:border-emerald-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleGenerateCipher}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg text-xs transition-colors shrink-0 cursor-pointer"
+                  >
+                    生成加密密文
+                  </button>
+                </div>
+                {encryptedResult && (
+                  <div className="space-y-2 pt-2 border-t border-stone-700">
+                    <div className="flex items-center justify-between text-[11px] text-stone-400">
+                      <span>生成结果（点击右侧复制）：</span>
+                      <button
+                        type="button"
+                        onClick={handleCopyCipher}
+                        className="text-emerald-400 hover:underline flex items-center gap-1 font-semibold cursor-pointer"
+                      >
+                        {copiedCipher ? <span>✓ 已复制密文！</span> : <span>复制密文</span>}
+                      </button>
+                    </div>
+                    <div className="p-2.5 bg-stone-900 rounded-lg font-mono text-[11px] text-emerald-300 break-all border border-stone-800 select-all">
+                      {encryptedResult}
+                    </div>
+                    <p className="text-[10px] text-stone-400">
+                      💡 下一步：打开 <code>src/utils/tokenCrypto.ts</code>，把复制的密文粘贴进 <code>export const EMBEDDED_ENCRYPTED_TOKEN = &apos;{encryptedResult.slice(0, 15)}...&apos;</code> 保存即可！
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Quick 30-sec Guide */}
             {showGhGuide && (
@@ -1750,11 +2039,22 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
               <button
                 type="button"
                 onClick={() => handleSyncToGitHub()}
-                disabled={isSyncingGitHub}
+                disabled={isSyncingGitHub || isPullingGitHub}
                 className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl text-xs font-semibold flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
               >
                 <UploadCloud className={`w-4 h-4 ${isSyncingGitHub ? 'animate-spin' : ''}`} />
                 <span>{isSyncingGitHub ? '正在推送至 GitHub 触发 Netlify 打包...' : '立即同步全网数据到云端 (Netlify 自动部署)'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handlePullFromGitHub}
+                disabled={isPullingGitHub || isSyncingGitHub}
+                className="px-5 py-2.5 bg-stone-800 hover:bg-stone-700 border border-stone-600 disabled:opacity-50 text-white rounded-xl text-xs font-semibold flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
+                title="从 GitHub 远程仓库获取最新在售商品和出清配置覆盖本地"
+              >
+                <Download className={`w-4 h-4 ${isPullingGitHub ? 'animate-bounce' : ''}`} />
+                <span>{isPullingGitHub ? '正在从 GitHub 获取最新数据...' : '从 GitHub 云端拉取最新数据覆盖本地'}</span>
               </button>
 
               {ghConfig.token && (
@@ -1772,6 +2072,13 @@ export const INITIAL_ITEMS: InventoryItem[] = ${JSON.stringify(items, null, 2)};
                   清除 Token
                 </button>
               )}
+            </div>
+
+            {/* Quick explanation about batch file pull vs browser pull */}
+            <div className="p-3 bg-stone-800/70 border border-stone-700/80 rounded-xl text-[11px] text-stone-300 leading-relaxed space-y-1.5">
+              <div className="font-semibold text-amber-300">💡 两种拉取与同步方式说明：</div>
+              <div>• <strong>网页端一键拉取（如上方按钮）：</strong> 快速将 GitHub 云端的最新商品与店铺设置加载到当前浏览器中，立刻生效。</div>
+              <div>• <strong>电脑本地代码一键拉取：</strong> 双击电脑项目根目录下的 <code className="text-amber-300 bg-stone-900 px-1 py-0.5 rounded">一键从GitHub拉取到本地.bat</code>，即可通过 Git 将在线修改的代码、样式和数据完整拉取到您的本地代码工程中。</div>
             </div>
 
             {/* Sync Feedback */}

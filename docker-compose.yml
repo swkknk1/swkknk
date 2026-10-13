@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  # 二手闲置集市 Web 服务
+  market-app:
+    build: .
+    container_name: campus-market
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # 持久化挂载商品、订单及配置数据，容器更新或重启后数据绝不丢失
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+
+  # （可选）Cloudflare Tunnel 外网穿透服务：免公网IP、免端口转发、自带HTTPS
+  # 使用方法：在 Cloudflare Zero Trust 获取 TUNNEL_TOKEN 后取消下方注释并填入即可
+  # tunnel:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: market-tunnel
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     - TUNNEL_TOKEN=你的Cloudflare_Tunnel_Token
+  #   depends_on:
+  #     - market-app

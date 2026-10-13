@@ -9,7 +9,9 @@ import {
   Mail,
   MessageCircle,
   LayoutGrid,
-  Rows
+  Rows,
+  Handshake,
+  BadgePercent
 } from 'lucide-react';
 import { InventoryItem, SelectedCartItem, OrderItem, StoreSettings } from './types';
 import { api } from './services/api';
@@ -57,7 +59,10 @@ export default function App() {
     const counts: Record<string, number> = {};
     CATEGORIES.forEach((cat) => {
       if (cat === '全部存货') {
-        counts[cat] = items.length;
+        // Exclude service items from homepage '全部存货' so the count matches what is displayed
+        counts[cat] = items.filter(
+          (i) => i.category !== '定制服务' && i.category !== '服务'
+        ).length;
       } else {
         counts[cat] = items.filter((i) => i.category === cat).length;
       }
@@ -121,9 +126,13 @@ export default function App() {
   const [detailItem, setDetailItem] = useState<InventoryItem | null>(null);
 
   // Admin View & Owner Authentication
-  const [isAdminView, setIsAdminView] = useState(false);
+  const [isAdminView, setIsAdminView] = useState(() => {
+    return localStorage.getItem('admin_view_active') === 'true' && api.hasAdminSession();
+  });
   const [adminAuthModal, setAdminAuthModal] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return api.hasAdminSession();
+  });
 
   // Notification Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -144,9 +153,18 @@ export default function App() {
         if (valid) {
           const fetchedOrders = await api.getOrders().catch(() => []);
           setOrders(fetchedOrders);
+          if (localStorage.getItem('admin_view_active') === 'true') {
+            setIsAdminView(true);
+          }
         } else {
           api.adminLogout();
+          setIsAdminView(false);
+          localStorage.removeItem('admin_view_active');
         }
+      } else {
+        setIsAuthenticated(false);
+        setIsAdminView(false);
+        localStorage.removeItem('admin_view_active');
       }
     };
     verifySession();
@@ -266,7 +284,6 @@ export default function App() {
     } catch (err: any) {
       showToast(err.message || '发布失败');
       if (err.message?.includes('权限') || err.message?.includes('登录')) {
-        setIsAuthenticated(false);
         setAdminAuthModal(true);
       }
     }
@@ -281,7 +298,6 @@ export default function App() {
     } catch (err: any) {
       showToast(err.message || '更新失败');
       if (err.message?.includes('权限') || err.message?.includes('登录')) {
-        setIsAuthenticated(false);
         setAdminAuthModal(true);
       }
     }
@@ -297,7 +313,6 @@ export default function App() {
     } catch (err: any) {
       showToast(err.message || '删除失败');
       if (err.message?.includes('权限') || err.message?.includes('登录')) {
-        setIsAuthenticated(false);
         setAdminAuthModal(true);
       }
     }
@@ -321,7 +336,6 @@ export default function App() {
     } catch (err: any) {
       showToast(err.message || '保存设置失败');
       if (err.message?.includes('权限') || err.message?.includes('登录')) {
-        setIsAuthenticated(false);
         setAdminAuthModal(true);
       }
     }
@@ -337,9 +351,11 @@ export default function App() {
   const handleToggleAdmin = () => {
     if (isAdminView) {
       setIsAdminView(false);
+      localStorage.removeItem('admin_view_active');
     } else {
       if (isAuthenticated) {
         setIsAdminView(true);
+        localStorage.setItem('admin_view_active', 'true');
       } else {
         setAdminAuthModal(true);
       }
@@ -349,6 +365,7 @@ export default function App() {
   const handleAdminAuthSuccess = async () => {
     setIsAuthenticated(true);
     setIsAdminView(true);
+    localStorage.setItem('admin_view_active', 'true');
     try {
       const fetchedOrders = await api.getOrders();
       setOrders(fetchedOrders);
@@ -360,6 +377,7 @@ export default function App() {
     await api.adminLogout();
     setIsAuthenticated(false);
     setIsAdminView(false);
+    localStorage.removeItem('admin_view_active');
     showToast('已安全退出店主后台');
   };
 
@@ -375,8 +393,12 @@ export default function App() {
 
   // Filter items
   const filteredItems = items.filter((item) => {
+    const isServiceItem = item.category === '定制服务' || item.category === '服务';
     const matchesCategory =
-      selectedCategory === '全部存货' || item.category === selectedCategory;
+      selectedCategory === '全部存货'
+        ? !isServiceItem
+        : item.category === selectedCategory;
+
     const matchesSearch =
       searchQuery.trim() === '' ||
       item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -407,7 +429,7 @@ export default function App() {
         selectedCategory={selectedCategory}
         categories={CATEGORIES}
         categoryCounts={categoryCounts}
-        totalItemsCount={items.length}
+        totalItemsCount={categoryCounts['全部存货'] ?? items.length}
         onOpenEmailModal={() => setIsEmailModalOpen(true)}
         onOpenCart={() => setIsCartOpen(true)}
         onOpenWeChatModal={() => setIsWeChatModalOpen(true)}
@@ -415,9 +437,11 @@ export default function App() {
         onSelectCategory={(cat) => {
           setSelectedCategory(cat);
           setIsAdminView(false);
+          localStorage.removeItem('admin_view_active');
         }}
         onScrollToRules={() => {
           setIsAdminView(false);
+          localStorage.removeItem('admin_view_active');
           document.getElementById('shopping-rules')?.scrollIntoView({ behavior: 'smooth' });
         }}
       />
@@ -437,7 +461,11 @@ export default function App() {
             onUpdateOrderStatus={handleUpdateOrderStatus}
             onUpdateSettings={handleUpdateSettings}
             onResetData={handleResetData}
-            onCloseAdmin={() => setIsAdminView(false)}
+            onRefreshData={loadAllData}
+            onCloseAdmin={() => {
+              setIsAdminView(false);
+              localStorage.removeItem('admin_view_active');
+            }}
             onLogoutAdmin={handleAdminLogout}
           />
         ) : (
@@ -461,6 +489,52 @@ export default function App() {
                 <p className="mt-2 text-xs sm:text-sm text-stone-600 leading-relaxed">
                   {settings.announcement}
                 </p>
+
+                {/* Price Range & Friendly Negotiation Notice Banner */}
+                <div className="mt-4 p-3.5 sm:p-4 rounded-2xl bg-gradient-to-br from-amber-500/10 via-orange-500/5 to-amber-50/50 border border-amber-200/80 shadow-2xs">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 pb-2.5 border-b border-amber-200/60">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-2xs">
+                        <Handshake className="w-4 h-4 stroke-[2.2]" />
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs sm:text-sm font-bold text-stone-900">
+                          物品定价为范围参考 · 诚心选购均接受议价
+                        </span>
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300/70">
+                          支持合理小刀
+                        </span>
+                      </div>
+                    </div>
+                    <div className="hidden sm:inline-flex items-center gap-1.5 text-[11px] text-amber-800 font-medium bg-white/80 px-2.5 py-1 rounded-lg border border-amber-200/60 shadow-2xs shrink-0">
+                      <BadgePercent className="w-3.5 h-3.5 text-amber-600" />
+                      <span>多件打包另享专属折上折</span>
+                    </div>
+                  </div>
+
+                  <p className="mt-2 text-xs text-stone-600 leading-relaxed">
+                    本集市所有物品标价均为综合成色与市场行情的<strong>弹性参考范围</strong>，绝非不可商榷的“一口死价”。若您真心喜欢某件好物，欢迎在勾选后通过邮件或微信沟通时附上您的<strong>心理预期价格</strong>；爽快买家或多件一同选购打包自提，更享额外满减与实用周边赠品相赠！
+                  </p>
+
+                  {/* 3 Value Highlights */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2.5 pt-1 text-[11px]">
+                    <div className="flex items-center gap-1.5 bg-white/70 px-2.5 py-1.5 rounded-lg border border-amber-100/90 text-stone-700">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                      <span className="font-semibold text-stone-800">范围参考定价</span>
+                      <span className="text-stone-400">· 拒绝虚高标价</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 bg-white/70 px-2.5 py-1.5 rounded-lg border border-amber-100/90 text-stone-700">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                      <span className="font-semibold text-stone-800">欢迎友好小刀</span>
+                      <span className="text-stone-400">· 带预算直接聊</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 bg-white/70 px-2.5 py-1.5 rounded-lg border border-amber-100/90 text-stone-700">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                      <span className="font-semibold text-stone-800">多选打包更优</span>
+                      <span className="text-stone-400">· 附赠周边好物</span>
+                    </div>
+                  </div>
+                </div>
 
                 {/* 3-Step Buyer Guide: Ultra-compact single row on mobile, full grid on desktop */}
                 {/* Mobile Compact 3-Step Bar (<640px) */}
@@ -715,26 +789,53 @@ export default function App() {
                 <span>存货选购与交易说明</span>
               </h2>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs text-stone-600 leading-relaxed mt-4">
-                <div className="p-4 bg-stone-50/70 rounded-xl border border-stone-100">
-                  <h3 className="font-bold text-stone-800 mb-1.5">关于物品实况</h3>
-                  <p>
-                    所有存货均为本人正规渠道购入自用或工作室闲置，实物实拍无滤镜修饰。成色如实说明，发货前会再次拍摄视频/照片与买家确认外观及功能。
-                  </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs text-stone-600 leading-relaxed mt-4">
+                <div className="p-4 bg-stone-50/70 rounded-xl border border-stone-100 flex flex-col justify-between">
+                  <div>
+                    <h3 className="font-bold text-stone-800 mb-1.5 flex items-center gap-1.5">
+                      <Package className="w-3.5 h-3.5 text-stone-500" />
+                      <span>关于物品实况</span>
+                    </h3>
+                    <p>
+                      所有存货均为本人正规渠道自用或工作室闲置，实物实拍无修图。成色如实说明，交接前可拍摄视频二次确认。
+                    </p>
+                  </div>
                 </div>
 
-                <div className="p-4 bg-stone-50/70 rounded-xl border border-stone-100">
-                  <h3 className="font-bold text-stone-800 mb-1.5">关于邮件联系与沟通</h3>
-                  <p>
-                    在心仪的物品上点击【我想买】勾选后，点击发信即可在新标签页打开网页版 Gmail 直发店主，或复制清单微信联系。物品由店主在确认交易后手动在后台标记为已售。
-                  </p>
+                <div className="p-4 bg-amber-50/50 rounded-xl border border-amber-200/80 flex flex-col justify-between shadow-2xs">
+                  <div>
+                    <h3 className="font-bold text-amber-950 mb-1.5 flex items-center gap-1.5">
+                      <Handshake className="w-3.5 h-3.5 text-amber-600" />
+                      <span>关于定价与议价</span>
+                    </h3>
+                    <p className="text-stone-700">
+                      所有标价均为<strong>弹性参考范围</strong>，非一口死价。诚心买家随时欢迎带心理价探讨；多件打包选购更享专属折上折！
+                    </p>
+                  </div>
                 </div>
 
-                <div className="p-4 bg-stone-50/70 rounded-xl border border-stone-100">
-                  <h3 className="font-bold text-stone-800 mb-1.5">关于交付与交接</h3>
-                  <p>
-                    {settings.pickupLocation}。支持在校园内（如宿舍区、教学楼、图书馆）方便面交验货，或约定地点自提。多件打包购买支持合理小刀或赠送实用小配件。
-                  </p>
+                <div className="p-4 bg-stone-50/70 rounded-xl border border-stone-100 flex flex-col justify-between">
+                  <div>
+                    <h3 className="font-bold text-stone-800 mb-1.5 flex items-center gap-1.5">
+                      <Mail className="w-3.5 h-3.5 text-stone-500" />
+                      <span>关于选购与沟通</span>
+                    </h3>
+                    <p>
+                      在心仪物品点击【我想买】勾选，一键直发 Gmail 或复制清单微信私信。成交后店主后台手动核销下架。
+                    </p>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-stone-50/70 rounded-xl border border-stone-100 flex flex-col justify-between">
+                  <div>
+                    <h3 className="font-bold text-stone-800 mb-1.5 flex items-center gap-1.5">
+                      <Shield className="w-3.5 h-3.5 text-stone-500" />
+                      <span>关于交付与交接</span>
+                    </h3>
+                    <p>
+                      {settings.pickupLocation}。支持在校园内方便地点（如宿舍区、教学楼、图书馆）当面验货交接或约定自提。
+                    </p>
+                  </div>
                 </div>
               </div>
 

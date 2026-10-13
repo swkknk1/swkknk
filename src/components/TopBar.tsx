@@ -17,7 +17,8 @@ import {
   ChevronDown,
   Check,
   FileText,
-  Layers
+  Layers,
+  Wrench
 } from 'lucide-react';
 
 interface TopBarProps {
@@ -48,6 +49,9 @@ export const getCategoryIcon = (category: string) => {
       return <Camera className="w-3.5 h-3.5" />;
     case '电脑外设':
       return <Laptop className="w-3.5 h-3.5" />;
+    case '定制服务':
+    case '服务':
+      return <Wrench className="w-3.5 h-3.5" />;
     case '箱包服饰':
       return <ShoppingBag className="w-3.5 h-3.5" />;
     case '生活美学':
@@ -65,8 +69,9 @@ export const getCategoryIcon = (category: string) => {
 const DEFAULT_CATEGORIES = [
   '全部存货',
   '数码摄影',
-  '生活美学',
   '电脑外设',
+  '定制服务',
+  '生活美学',
   '箱包服饰',
   '家居好物',
   '图书手办',
