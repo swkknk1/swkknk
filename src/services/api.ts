@@ -9,8 +9,36 @@ const STORAGE_KEYS = {
 
 export const DEFAULT_INITIAL_ITEMS: InventoryItem[] = [];
 
+/**
+ * Safe localStorage wrapper to prevent mobile Safari / WeChat / Private browsing
+ * from throwing QuotaExceededError when storing large item payloads (> 2.5MB - 5MB)
+ */
+export function safeSetLocalStorage(key: string, value: string): boolean {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    console.warn(`[Storage] Failed to save key "${key}" to localStorage:`, e);
+    return false;
+  }
+}
+
+export function safeGetLocalStorage(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch (e) {
+    return null;
+  }
+}
+
+export function safeRemoveLocalStorage(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {}
+}
+
 const getAdminHeaders = () => {
-  const token = sessionStorage.getItem('admin_session_token') || localStorage.getItem('admin_session_token') || '';
+  const token = sessionStorage.getItem('admin_session_token') || safeGetLocalStorage('admin_session_token') || '';
   return {
     'Content-Type': 'application/json',
     'x-admin-token': token,
@@ -26,8 +54,8 @@ export const api = {
         const ct = res.headers.get('content-type') || '';
         if (ct.includes('application/json')) {
           const data = await res.json();
-          if (Array.isArray(data)) {
-            localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(data));
+          if (Array.isArray(data) && data.length > 0) {
+            safeSetLocalStorage(STORAGE_KEYS.ITEMS, JSON.stringify(data));
             return data;
           }
         }
@@ -35,30 +63,32 @@ export const api = {
     } catch {
       // Network failure / static host fallback
     }
-    const local = localStorage.getItem(STORAGE_KEYS.ITEMS);
+
+    // Static mode (Netlify / GitHub Pages):
+    // 1. Check local storage in case admin made offline local edits
+    const local = safeGetLocalStorage(STORAGE_KEYS.ITEMS);
     if (local !== null) {
       try {
         const parsed = JSON.parse(local);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          // If INITIAL_ITEMS has more items (e.g. newly published on cloud / Netlify),
-          // prioritize INITIAL_ITEMS and refresh localStorage so users never get stuck with stale items!
+          // If INITIAL_ITEMS has more items (newly deployed items), prioritize INITIAL_ITEMS
           if (parsed.length < (INITIAL_ITEMS || []).length) {
-            localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(INITIAL_ITEMS));
             return INITIAL_ITEMS;
           }
           const localIds = new Set(parsed.map((i: any) => i.id));
           const missingInLocal = (INITIAL_ITEMS || []).filter((i) => !localIds.has(i.id));
           if (missingInLocal.length > 0) {
             const merged = [...missingInLocal, ...parsed];
-            localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(merged));
             return merged;
           }
           return parsed;
         }
       } catch {}
     }
+
+    // 2. Default fallback: Always return INITIAL_ITEMS safely!
+    // Never force-write 4.2MB of Base64 into visitor's browser localStorage.
     if (INITIAL_ITEMS && INITIAL_ITEMS.length > 0) {
-      localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(INITIAL_ITEMS));
       return INITIAL_ITEMS;
     }
     return [];
@@ -75,7 +105,7 @@ export const api = {
       if (res.ok) {
         const newItem = await res.json();
         const current = await this.getItems();
-        localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify([newItem, ...current.filter((i) => i.id !== newItem.id)]));
+        safeSetLocalStorage(STORAGE_KEYS.ITEMS, JSON.stringify([newItem, ...current.filter((i) => i.id !== newItem.id)]));
         return newItem;
       }
 
@@ -108,7 +138,7 @@ export const api = {
     };
     const current = await this.getItems();
     const updated = [newItem, ...current.filter((i) => i.id !== newItem.id)];
-    localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(updated));
+    safeSetLocalStorage(STORAGE_KEYS.ITEMS, JSON.stringify(updated));
     return newItem;
   },
 
@@ -124,7 +154,7 @@ export const api = {
         const updated = await res.json();
         const current = await this.getItems();
         const mapped = current.map((i) => (i.id === id ? updated : i));
-        localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(mapped));
+        safeSetLocalStorage(STORAGE_KEYS.ITEMS, JSON.stringify(mapped));
         return updated;
       }
 
@@ -134,7 +164,7 @@ export const api = {
         if (index !== -1) {
           const updated = { ...current[index], ...updates };
           current[index] = updated;
-          localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(current));
+          safeSetLocalStorage(STORAGE_KEYS.ITEMS, JSON.stringify(current));
         }
         const err = await res.json().catch(() => ({}));
         throw new Error(err.message || err.error || '更新商品失败，请确认店主管理登录状态');
@@ -151,7 +181,7 @@ export const api = {
     if (index !== -1) {
       const updated = { ...current[index], ...updates };
       current[index] = updated;
-      localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(current));
+      safeSetLocalStorage(STORAGE_KEYS.ITEMS, JSON.stringify(current));
       return updated;
     }
     throw new Error('未找到该商品');
@@ -167,7 +197,7 @@ export const api = {
       if (res.ok) {
         const current = await this.getItems();
         const filtered = current.filter((i) => i.id !== id);
-        localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(filtered));
+        safeSetLocalStorage(STORAGE_KEYS.ITEMS, JSON.stringify(filtered));
         return true;
       }
 
@@ -184,7 +214,7 @@ export const api = {
     // Static mode delete (Netlify fallback)
     const current = await this.getItems();
     const filtered = current.filter((i) => i.id !== id);
-    localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(filtered));
+    safeSetLocalStorage(STORAGE_KEYS.ITEMS, JSON.stringify(filtered));
     return true;
   },
 
@@ -200,12 +230,12 @@ export const api = {
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
-          localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(data));
+          safeSetLocalStorage(STORAGE_KEYS.ORDERS, JSON.stringify(data));
           return data;
         }
       }
     } catch {}
-    const local = localStorage.getItem(STORAGE_KEYS.ORDERS);
+    const local = safeGetLocalStorage(STORAGE_KEYS.ORDERS);
     if (local) {
       try {
         return JSON.parse(local);
@@ -277,7 +307,7 @@ export const api = {
     const updated = await res.json();
     const orders = await this.getOrders();
     const mapped = orders.map((o) => (o.id === id ? updated : o));
-    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(mapped));
+    safeSetLocalStorage(STORAGE_KEYS.ORDERS, JSON.stringify(mapped));
     return updated;
   },
 
@@ -291,13 +321,13 @@ export const api = {
         const ct = res.headers.get('content-type') || '';
         if (ct.includes('application/json')) {
           const data = await res.json();
-          localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(data));
+          safeSetLocalStorage(STORAGE_KEYS.SETTINGS, JSON.stringify(data));
           return { ...defaults, ...data };
         }
       }
     } catch {}
 
-    const local = localStorage.getItem(STORAGE_KEYS.SETTINGS);
+    const local = safeGetLocalStorage(STORAGE_KEYS.SETTINGS);
     if (local) {
       try {
         return { ...defaults, ...JSON.parse(local) };
@@ -319,7 +349,7 @@ export const api = {
     }
 
     const data = await res.json();
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(data));
+    safeSetLocalStorage(STORAGE_KEYS.SETTINGS, JSON.stringify(data));
     return data;
   },
 
@@ -342,13 +372,13 @@ export const api = {
         headers: getAdminHeaders(),
       });
     } catch {}
-    localStorage.removeItem(STORAGE_KEYS.ITEMS);
-    localStorage.removeItem(STORAGE_KEYS.ORDERS);
-    localStorage.removeItem(STORAGE_KEYS.SETTINGS);
+    safeRemoveLocalStorage(STORAGE_KEYS.ITEMS);
+    safeRemoveLocalStorage(STORAGE_KEYS.ORDERS);
+    safeRemoveLocalStorage(STORAGE_KEYS.SETTINGS);
   },
 
   async checkAdminSession(): Promise<boolean> {
-    const token = sessionStorage.getItem('admin_session_token') || localStorage.getItem('admin_session_token');
+    const token = sessionStorage.getItem('admin_session_token') || safeGetLocalStorage('admin_session_token');
     if (!token) return false;
 
     if (token.startsWith('adm_static_')) {
@@ -383,7 +413,7 @@ export const api = {
         if (data.success) {
           if (data.token) {
             sessionStorage.setItem('admin_session_token', data.token);
-            localStorage.setItem('admin_session_token', data.token);
+            safeSetLocalStorage('admin_session_token', data.token);
           }
           return { success: true };
         }
@@ -408,7 +438,7 @@ export const api = {
     ) {
       const staticToken = `adm_static_${Date.now()}`;
       sessionStorage.setItem('admin_session_token', staticToken);
-      localStorage.setItem('admin_session_token', staticToken);
+      safeSetLocalStorage('admin_session_token', staticToken);
       return { success: true };
     }
 
@@ -423,12 +453,16 @@ export const api = {
       });
     } catch {}
     sessionStorage.removeItem('admin_session_token');
-    localStorage.removeItem('admin_session_token');
-    localStorage.removeItem(STORAGE_KEYS.ORDERS);
+    safeRemoveLocalStorage('admin_session_token');
+    safeRemoveLocalStorage(STORAGE_KEYS.ORDERS);
   },
 
   hasAdminSession(): boolean {
-    return !!(sessionStorage.getItem('admin_session_token') || localStorage.getItem('admin_session_token'));
+    try {
+      return !!(sessionStorage.getItem('admin_session_token') || safeGetLocalStorage('admin_session_token'));
+    } catch {
+      return false;
+    }
   },
 
   async persistToSource(items?: InventoryItem[], settings?: StoreSettings): Promise<{ success: boolean; message: string }> {
@@ -444,8 +478,8 @@ export const api = {
     }
 
     const data = await res.json();
-    if (items) localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(items));
-    if (settings) localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+    if (items) safeSetLocalStorage(STORAGE_KEYS.ITEMS, JSON.stringify(items));
+    if (settings) safeSetLocalStorage(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
     return data;
   },
 };

@@ -407,8 +407,12 @@ export async function pullStoreDataFromGitHub(): Promise<{
     }
 
     // Update browser localStorage so current session immediately reads new data
-    localStorage.setItem('inventory_store_items', JSON.stringify(items));
-    localStorage.setItem('inventory_store_settings', JSON.stringify(mergedSettings));
+    try {
+      localStorage.setItem('inventory_store_items', JSON.stringify(items));
+      localStorage.setItem('inventory_store_settings', JSON.stringify(mergedSettings));
+    } catch (e) {
+      console.warn('Could not cache github synced items in localStorage:', e);
+    }
 
     // If local Node server is running, also persist to local files on disk
     try {

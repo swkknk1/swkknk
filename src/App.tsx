@@ -14,7 +14,8 @@ import {
   BadgePercent
 } from 'lucide-react';
 import { InventoryItem, SelectedCartItem, OrderItem, StoreSettings } from './types';
-import { api } from './services/api';
+import { api, safeGetLocalStorage, safeSetLocalStorage, safeRemoveLocalStorage } from './services/api';
+import { INITIAL_ITEMS, INITIAL_SETTINGS } from './data/storeData';
 import { CATEGORIES } from './utils/imagePresets';
 import { TopBar, getCategoryIcon } from './components/TopBar';
 import { ItemCard } from './components/ItemCard';
@@ -33,22 +34,22 @@ import {
 } from './utils/cookie';
 
 export default function App() {
-  const [items, setItems] = useState<InventoryItem[]>([]);
+  const [items, setItems] = useState<InventoryItem[]>(() => INITIAL_ITEMS || []);
   const [orders, setOrders] = useState<OrderItem[]>([]);
-  const [settings, setSettings] = useState<StoreSettings>({
+  const [settings, setSettings] = useState<StoreSettings>(() => INITIAL_SETTINGS || {
     sellerEmail: 'shiwokakanaka@gmail.com',
-    storeName: '个人私物与存货出清集市',
-    announcement: '因个人搬家与闲置整理，部分珍藏好物与多余存货好价出清！所有物品支持自由勾选，一键生成邮件直发店主或直接微信扫码发送清单。',
-    currency: '¥',
+    storeName: '存货出清',
+    announcement: '因个人搬家与闲置整理，部分珍藏好物与多余存货好价出清！所有物品支持勾选订购，提交后将通过邮件直达我并同步录入后台，成色如实说明，自提或在学校领取均可。',
+    currency: '$',
     contactWeChat: '月月鸟 (美国)',
-    contactWeChatName: '月月鸟',
+    contactWeChatName: 'swkknk',
     pickupLocation: '自提或在学校领取',
     allowCounterOffer: true,
   });
 
   const [isWeChatModalOpen, setIsWeChatModalOpen] = useState(false);
 
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string>('全部存货');
   const [searchQuery, setSearchQuery] = useState('');
   const [onlyAvailable, setOnlyAvailable] = useState(false);
@@ -99,7 +100,7 @@ export default function App() {
   // Cart / Want-to-Buy Selection with persistence
   const [cart, setCart] = useState<SelectedCartItem[]>(() => {
     try {
-      const saved = localStorage.getItem('visitor_saved_cart');
+      const saved = safeGetLocalStorage('visitor_saved_cart');
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -109,7 +110,7 @@ export default function App() {
 
   // Save cart whenever it changes so user doesn't lose checklist
   useEffect(() => {
-    localStorage.setItem('visitor_saved_cart', JSON.stringify(cart));
+    safeSetLocalStorage('visitor_saved_cart', JSON.stringify(cart));
   }, [cart]);
 
   // Prompt email modal on first arrival ONLY if no email is remembered AND not dismissed
@@ -127,7 +128,7 @@ export default function App() {
 
   // Admin View & Owner Authentication
   const [isAdminView, setIsAdminView] = useState(() => {
-    return localStorage.getItem('admin_view_active') === 'true' && api.hasAdminSession();
+    return safeGetLocalStorage('admin_view_active') === 'true' && api.hasAdminSession();
   });
   const [adminAuthModal, setAdminAuthModal] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -153,32 +154,41 @@ export default function App() {
         if (valid) {
           const fetchedOrders = await api.getOrders().catch(() => []);
           setOrders(fetchedOrders);
-          if (localStorage.getItem('admin_view_active') === 'true') {
+          if (safeGetLocalStorage('admin_view_active') === 'true') {
             setIsAdminView(true);
           }
         } else {
           api.adminLogout();
           setIsAdminView(false);
-          localStorage.removeItem('admin_view_active');
+          safeRemoveLocalStorage('admin_view_active');
         }
       } else {
         setIsAuthenticated(false);
         setIsAdminView(false);
-        localStorage.removeItem('admin_view_active');
+        safeRemoveLocalStorage('admin_view_active');
       }
     };
     verifySession();
   }, []);
 
   const loadAllData = async () => {
-    setIsLoading(true);
     try {
       const [fetchedItems, fetchedSettings] = await Promise.all([
-        api.getItems(),
-        api.getSettings(),
+        api.getItems().catch((err) => {
+          console.warn('api.getItems failed, falling back to INITIAL_ITEMS:', err);
+          return INITIAL_ITEMS || [];
+        }),
+        api.getSettings().catch((err) => {
+          console.warn('api.getSettings failed, falling back to INITIAL_SETTINGS:', err);
+          return INITIAL_SETTINGS;
+        }),
       ]);
-      setItems(fetchedItems);
-      setSettings(fetchedSettings);
+      if (fetchedItems && fetchedItems.length > 0) {
+        setItems(fetchedItems);
+      }
+      if (fetchedSettings) {
+        setSettings(fetchedSettings);
+      }
     } catch (err) {
       console.error('Failed to load data:', err);
     } finally {
@@ -351,11 +361,11 @@ export default function App() {
   const handleToggleAdmin = () => {
     if (isAdminView) {
       setIsAdminView(false);
-      localStorage.removeItem('admin_view_active');
+      safeRemoveLocalStorage('admin_view_active');
     } else {
       if (isAuthenticated) {
         setIsAdminView(true);
-        localStorage.setItem('admin_view_active', 'true');
+        safeSetLocalStorage('admin_view_active', 'true');
       } else {
         setAdminAuthModal(true);
       }
@@ -365,7 +375,7 @@ export default function App() {
   const handleAdminAuthSuccess = async () => {
     setIsAuthenticated(true);
     setIsAdminView(true);
-    localStorage.setItem('admin_view_active', 'true');
+    safeSetLocalStorage('admin_view_active', 'true');
     try {
       const fetchedOrders = await api.getOrders();
       setOrders(fetchedOrders);
@@ -377,7 +387,7 @@ export default function App() {
     await api.adminLogout();
     setIsAuthenticated(false);
     setIsAdminView(false);
-    localStorage.removeItem('admin_view_active');
+    safeRemoveLocalStorage('admin_view_active');
     showToast('已安全退出店主后台');
   };
 
@@ -437,11 +447,11 @@ export default function App() {
         onSelectCategory={(cat) => {
           setSelectedCategory(cat);
           setIsAdminView(false);
-          localStorage.removeItem('admin_view_active');
+          safeRemoveLocalStorage('admin_view_active');
         }}
         onScrollToRules={() => {
           setIsAdminView(false);
-          localStorage.removeItem('admin_view_active');
+          safeRemoveLocalStorage('admin_view_active');
           document.getElementById('shopping-rules')?.scrollIntoView({ behavior: 'smooth' });
         }}
       />
@@ -464,7 +474,7 @@ export default function App() {
             onRefreshData={loadAllData}
             onCloseAdmin={() => {
               setIsAdminView(false);
-              localStorage.removeItem('admin_view_active');
+              safeRemoveLocalStorage('admin_view_active');
             }}
             onLogoutAdmin={handleAdminLogout}
           />

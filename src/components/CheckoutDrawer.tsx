@@ -166,7 +166,9 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
   const markCurrentItemsAsSent = () => {
     const updatedSentIds = Array.from(new Set([...sentItemIds, ...resolvedItems.map((i) => i.id)]));
     setSentItemIds(updatedSentIds);
-    localStorage.setItem('visitor_sent_item_ids', JSON.stringify(updatedSentIds));
+    try {
+      localStorage.setItem('visitor_sent_item_ids', JSON.stringify(updatedSentIds));
+    } catch {}
   };
 
   const handleCopyText = () => {
